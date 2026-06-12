@@ -1,0 +1,12 @@
+V32.2 clean stable: integrate validated ABBA orientation and masked hemispheres
+
+- Add V32.2 validated ABBA orientation step using perm=(1,2,0), orientation=PIL
+- Fix ABBA plane mapping so Coronal/Sagittal/Horizontal match actual planes
+- Keep coronal display upright based on manual ABBA validation
+- Generate hemispheres.tiff only inside annotation mask instead of full volume
+- Keep hemispheres under dedicated hemispheres_file metadata key, not as normal display channel
+- Preserve V32 stable compatibility fixes: root 997, ABBA Java fields, additional_references=[]
+- Keep invalid NeuroRat direct reference replacement out of the main pipeline
+- Keep SIGMA reference work as separate non-destructive experiment
+- Add optional napari viewer for installed BrainGlobe cache inspection
+- Update README and ABBA notes for the new expected behavior

@@ -1,61 +1,27 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
+# Python / virtual environments
 .venv/
-venv/
-ENV/
-env/
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+__pycache__/
+*.pyc
 
-# OS / IDE
+# Generated outputs and reports
+reports/*
+!reports/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Raw data are large and must stay local
+/data/raw/bluebrainheadmodels/*
+!/data/raw/bluebrainheadmodels/.gitkeep
+
+# BrainGlobe/ABBA local caches and backups
+*.tar.gz
+*_backup_*/
+_paxinos_cleanup_backup_*/
+
+# OS/editor junk
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-
-# Cursor / AI indexing
-.cursorignore
-.cursorindexingignore
-
-# Ignore atlas data folders
-data/raw/**
-data/processed/**
-data/output/**
-
-# Keep folder structure
-!data/.gitkeep
-!data/raw/
-!data/raw/.gitkeep
-!data/raw/bluebrainheadmodels/
-!data/raw/bluebrainheadmodels/.gitkeep
-!data/processed/
-!data/processed/.gitkeep
-!data/output/
-!data/output/.gitkeep
-
-# Keep reports folder but ignore generated reports
-reports/*
-!reports/.gitkeep
-
-# Atlas and large binary resources
-*.nii
-*.nii.gz
-*.zip
-*.h5
-*.nrrd
-*.mhd
-*.mha
-*.tif
-*.tiff
-*.obj
-*.stl
-*.ply
-
-# Logs
-*.log

@@ -1,153 +1,77 @@
 # Rat Paxinos BrainGlobe Builder
 
-Tools for building a BrainGlobe-compatible rat atlas package from the BlueBrainHeadModels Paxinos-Watson atlas resources.
+Version: **V32.2 Oriented Reference Prep**
 
-This repository does **not** distribute the original atlas data. It only provides setup scripts, validation scripts, and conversion scaffolding.
+This package is based on the last stable V32 line and adds the orientation fix that was validated in ABBA.
 
-## Source dataset
+## What is fixed
 
-This project is designed for the following source dataset:
+- ABBA button mapping is corrected by applying the validated display-space orientation:
+  - old internal axis model: `[LR, AP, SI] / LPI`
+  - new internal axis model: `[AP, SI, LR] / PIL`
+  - permutation: `perm=(1,2,0)`
+- ABBA `Coronal`, `Sagittal`, and `Horizontal` should now match the actual slice plane.
+- Coronal slices should be upright.
+- `hemispheres.tiff` is now masked to `annotation > 0`, instead of filling the full rectangular volume.
+- `hemispheres.tiff` is kept under the dedicated `hemispheres_file` metadata key and is not advertised as a normal display/reference channel in `metadata["files"]`.
+- The invalid old NeuroRat reference replacement is not included in the main pipeline.
 
-- **Dataset:** BlueBrainHeadModels
-- **Version:** v1
-- **Published:** April 4, 2024
-- **Version DOI:** `10.5281/zenodo.10926947`
-- **Associated repository:** `BlueBrain/BlueBrainHeadModels`
+## What is not fixed yet
 
-Use this exact dataset version when reproducing results. Later source dataset versions may change file names, geometry, labels, or licensing. Because apparently data formats enjoy mutating when nobody is watching.
+The current `reference.tiff` is still a synthetic label-edge reference. It is useful for loading tests, but it is not a Nissl/MRI-like anatomical background. Do not pretend otherwise; that is how software becomes folklore.
 
-## What this project aims to do
-
-The long-term goal is to package the Paxinos-Watson rat brain atlas resources from BlueBrainHeadModels into a BrainGlobe-compatible atlas that can be used by tools such as ABBA/Fiji.
-
-The intended workflow is:
-
-1. Validate local source files.
-2. Inspect NIfTI geometry, orientation, voxel sizes, and label IDs.
-3. Parse Paxinos-Watson label tables.
-4. Generate a BrainGlobe-compatible structure tree.
-5. Select and validate a reference volume.
-6. Build a local BrainGlobe atlas package.
-7. Test the atlas in ABBA.
-
-The current scaffold performs steps 1-3 and prepares the project for later conversion.
-
-## Repository layout
+Use:
 
 ```text
-rat-paxinos-brainglobe-builder/
-├── run_builder.bat
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── src/
-│   ├── inspect_inputs.py
-│   ├── parse_labels.py
-│   ├── build_structures_json.py
-│   ├── build_brainglobe_atlas.py
-│   └── utils_paths.py
-├── data/
-│   ├── raw/
-│   │   └── bluebrainheadmodels/
-│   ├── processed/
-│   └── output/
-└── reports/
+RUN_SIGMA_REFERENCE_EXPERIMENT.bat
 ```
 
-## Data placement
+for the separate, non-destructive SIGMA reference experiment.
 
-Download the BlueBrainHeadModels v1 dataset manually from Zenodo and place the files in:
+## Main run
+
+Copy this project folder to:
 
 ```text
-data/raw/bluebrainheadmodels/
+G:\rat-paxinos-brainglobe-builder
 ```
 
-The expected source files include:
+Keep raw data in:
 
 ```text
-Paxinos_Watson_Atlas.nii.gz
-Paxinos_Watson_Labels.txt
-Paxinos_Watson_Labels_Cortex.txt
-SIGMA_Anatomical_Brain_Atlas.nii
-SIGMA_Anatomical_Brain_Atlas_Labels.txt
-Neurorat.nii.gz
-transform_waxholm_to_neurorat.h5
-waxholm_aligned_to_neurorat.nii.gz
-Waxholm_Atlas.nii.gz
-Waxholm_Atlas_Labels.txt
+data\raw\bluebrainheadmodels
 ```
 
-Optional but useful files include:
-
-```text
-NeuroRat_MRI.nii.gz
-NeuroRatLabels.nii.gz
-Waxholm_Atlas_MRI.nii.gz
-Waxholm_Atlas_Labels.nii.gz
-Waxholm_Atlas_Mask.nii.gz
-```
-
-Large atlas data files are intentionally ignored by Git.
-
-## One-click setup and inspection
-
-Run:
+Then run:
 
 ```text
 run_builder.bat
 ```
 
-The BAT file will:
-
-1. Check whether Python is installed.
-2. If Python is missing, ask before installing Python 3.11 via `winget`.
-3. Create a local `.venv`.
-4. Install `requirements.txt`.
-5. Run dataset inspection.
-6. Write reports to `reports/`.
-
-Generated reports:
+After completion, restart Fiji/ABBA completely and open:
 
 ```text
-reports/input_inspection_report.txt
-reports/input_inspection_report.json
+paxinos_watson_rat_40um
 ```
 
-## Licensing and data redistribution
+Expected ABBA behavior:
 
-This repository is intended to contain only original code and documentation for conversion/packaging.
+```text
+Coronal    = coronal and upright
+Sagittal   = sagittal
+Horizontal = horizontal
+```
 
-The original atlas data are not redistributed here and remain subject to their respective licenses and terms of use. Users must obtain the required source files directly from the original dataset provider.
+## Useful checks
 
-Attribution should include:
+```text
+reports\v32_2_abba_orientation_report_official.txt
+reports\v31_hemispheres_report_official.txt
+reports\v25_final_status.txt
+```
 
-- BlueBrainHeadModels dataset
-- Paxinos & Watson rat brain atlas source material
-- SIGMA atlas, where applicable
-- Waxholm Rat Brain Atlas, where applicable
-- NeuroRat model, where applicable
-- BrainGlobe, if a BrainGlobe atlas is generated
+Optional direct viewer:
 
-## Current status
-
-Scaffold stage.
-
-Implemented:
-
-- Repository structure.
-- Single `run_builder.bat`.
-- Python virtual environment setup.
-- Requirements installation.
-- NIfTI metadata inspection.
-- Paxinos label parsing.
-- Draft flat `structures.json` generator.
-
-Not finalized yet:
-
-- Reference volume selection.
-- BrainGlobe atlas generation.
-- Mesh generation.
-- Anatomical hierarchy.
-- ABBA validation.
-
-Do not treat the output as a validated atlas yet. That would be premature, and premature atlas confidence is how reviewers acquire new weapons.
+```text
+RUN_VIEW_INSTALLED_IN_NAPARI.bat
+```
