@@ -1,18 +1,23 @@
 @echo off
+set "PYTHONDONTWRITEBYTECODE=1"
 setlocal EnableExtensions EnableDelayedExpansion
-pushd "%~dp0"
 
-title Rat Paxinos BrainGlobe Builder - V32.2 Oriented Reference Prep
+title Rat Paxinos BrainGlobe Builder
+cd /d "%~dp0"
+set "BUILDER_ROOT=%~dp0."
 
 echo.
 echo ============================================================
-echo  Rat Paxinos BrainGlobe Builder - V32.2 ORIENTED REFERENCE PREP
+echo  Rat Paxinos BrainGlobe Builder
+echo  LabelAtlas-only release candidate
 echo ============================================================
 echo.
-echo Stable builder line with validated ABBA orientation fix.
-echo This still does NOT run the invalid V33 NeuroRat reference replacement.
-echo The main atlas uses the provisional label-edge reference until SIGMA is validated.
-echo Use RUN_SIGMA_REFERENCE_EXPERIMENT.bat for reference-background research.
+echo This runner builds/installs the Paxinos-Watson rat LabelAtlas.
+echo It does not build Waxholm/SIGMA/NeuroRat/MRI reference channels.
+echo.
+echo Required ABBA display after build:
+echo   reference (Ch. 0) = ON
+echo   borders   (Ch. 1) = OFF
 echo.
 
 set "PY_EXE="
@@ -25,11 +30,7 @@ for %%A in (%*) do (
     if /I "%%~A"=="--no-patch-abba" set "PATCH_ABBA=NO"
 )
 
-echo Required raw files must already exist in:
-echo   data\raw\bluebrainheadmodels
-echo.
-
-echo [01/34] Finding Python...
+echo [1/30] Checking Python installation...
 where py >nul 2>nul
 if %ERRORLEVEL%==0 (
     py -3.11 --version >nul 2>nul
@@ -45,10 +46,12 @@ if %ERRORLEVEL%==0 (
         )
     )
 )
+
 if "%PY_EXE%"=="" (
     where python >nul 2>nul
     if %ERRORLEVEL%==0 set "PY_EXE=python"
 )
+
 if "%PY_EXE%"=="" (
     echo Python was not found.
     choice /C YN /M "Install Python 3.11 via winget now?"
@@ -68,153 +71,146 @@ if "%PY_EXE%"=="" (
     pause
     exit /b 0
 )
+
 %PY_EXE% --version || goto fail
 
 echo.
-echo [02/34] Checking local virtual environment...
+echo [2/30] Creating/checking local virtual environment...
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     %PY_EXE% -m venv "%VENV_DIR%" || goto fail
 )
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 
 echo.
-echo [03/34] Installing/updating Python requirements...
+echo [3/30] Installing Python requirements...
 "%VENV_PY%" -m pip install --upgrade pip || goto fail
 "%VENV_PY%" -m pip install -r "%REQ_FILE%" || goto fail
 
 echo.
-echo [04/34] Running syntax smoke test...
-"%VENV_PY%" "src\v28_syntax_smoke_test.py" || goto fail
+echo [4/30] Running syntax smoke test...
+"%VENV_PY%" -B "src\release_syntax_check_no_pycache.py" || goto fail
 
 echo.
-echo [05/34] Cleaning generated output folders from previous runs...
-"%VENV_PY%" "src\v27_clean_generated_outputs.py" || goto fail
+echo [5/30] Cleaning previous generated outputs...
+if exist "src\v27_clean_generated_outputs.py" "%VENV_PY%" "src\v27_clean_generated_outputs.py" || goto fail
 
 echo.
-echo [06/34] Recording environment versions...
+echo [6/30] Recording environment...
 "%VENV_PY%" "src\record_environment.py" || goto fail
 
 echo.
-echo [07/34] Inspecting raw inputs...
+echo [7/30] Inspecting input files...
 "%VENV_PY%" "src\inspect_inputs.py" || goto fail
 
 echo.
-echo [08/34] Analyzing Paxinos labels...
+
+echo.
+echo [7B/30] Checking required Paxinos source data...
+REM V32.26 DATA MANAGER AUTODOWNLOAD START
+REM Ensure minimal Paxinos/Watson source data before the label analysis steps.
+REM Windows fix: do not pass --root \"%~dp0\" directly because %%~dp0 ends with a backslash.
+REM The trailing backslash can break argv quoting. Use %%~dp0. instead.
+set "V32_26_PYEXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%V32_26_PYEXE%" set "V32_26_PYEXE=python"
+set "V32_26_ROOT=%~dp0."
+echo.
+echo [DATA] Checking/downloading minimal Paxinos source data...
+"%V32_26_PYEXE%" "%~dp0src\release_data_manager.py" --root "%V32_26_ROOT%" --mode ensure-minimal --include-optional
+if errorlevel 1 goto fail
+REM V32.26 DATA MANAGER AUTODOWNLOAD END
+
+"%VENV_PY%" "src\release_data_preflight.py" || goto missing_data
+echo [8/30] Analyzing Paxinos labels...
 "%VENV_PY%" "src\analyze_paxinos_labels.py" || goto fail
 
 echo.
-echo [09/34] Analyzing placeholder labels...
+echo [9/30] Resolving placeholder label context...
 "%VENV_PY%" "src\analyze_placeholder_context.py" || goto fail
 
 echo.
-echo [10/34] Building draft structures.json...
+echo [10/30] Building draft structures.json...
 "%VENV_PY%" "src\build_structures_json.py" || goto fail
 
 echo.
-echo [11/34] Cleaning draft structure labels...
+echo [11/30] Applying BrainGlobe root fix...
+"%VENV_PY%" "src\v11_fix_brainglobe_root.py" || goto fail
+
+echo.
+echo [12/30] Cleaning labels/names for draft structures...
 "%VENV_PY%" "src\v15_cleanup_structures_labels.py" --stage draft || goto fail
 
 echo.
-echo [12/34] Building draft hierarchy...
+echo [13/30] Building hierarchical draft structures...
 "%VENV_PY%" "src\v16_build_hierarchical_structures.py" --stage draft || goto fail
 
 echo.
-echo [13/34] Building provisional BrainGlobe atlas folder...
+echo [14/30] Building provisional atlas folder...
 "%VENV_PY%" "src\build_provisional_brainglobe_atlas.py" || goto fail
 
 echo.
-echo [14/34] Fixing provisional metadata for BrainGlobe/ABBA...
+echo [15/30] Fixing provisional metadata...
+"%VENV_PY%" "src\v13_fix_brainglobe_metadata.py" --target provisional || goto fail
 "%VENV_PY%" "src\v22_fix_metadata_compliance.py" --target provisional || goto fail
-
-echo.
-echo [15/34] Normalizing provisional root to 997...
-"%VENV_PY%" "src\v29_fix_abba_structure_root.py" --target provisional || goto fail
-
-echo.
-echo [16/34] Enriching provisional structures for ABBA Java helpers...
-"%VENV_PY%" "src\v30_enrich_abba_java_structures.py" --target provisional || goto fail
-
-echo.
-echo [17/34] Ensuring provisional additional_references is empty...
 "%VENV_PY%" "src\v32_fix_no_additional_references.py" --target provisional || goto fail
 
 echo.
-echo [18/34] Applying validated ABBA orientation to provisional NIfTI files...
-"%VENV_PY%" "src\v32_2_apply_validated_abba_orientation.py" --target provisional || goto fail
+echo [16/30] Fixing provisional ABBA structure/root compatibility...
+"%VENV_PY%" "src\v29_fix_abba_structure_root.py" --target provisional || goto fail
+"%VENV_PY%" "src\v30_enrich_abba_java_structures.py" --target provisional || goto fail
+"%VENV_PY%" "src\v27_validate_root_compatibility.py" --target provisional || goto fail
 
 echo.
-echo [19/34] Exporting provisional TIFF files...
+echo [17/30] Exporting provisional TIFFs and hemispheres...
 "%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target provisional || goto fail
-
-echo.
-echo [20/34] Creating masked provisional hemispheres.tiff...
 "%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target provisional || goto fail
+echo.
+echo [17b/30] Applying final ABBA orientation/display baseline to provisional atlas...
+"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target provisional --apply || goto fail
 
 echo.
-echo [21/34] Validating provisional atlas package...
+echo [18/30] Validating provisional atlas package...
 "%VENV_PY%" "src\validate_provisional_atlas_package.py" || goto fail
 
 echo.
-echo [22/34] Building official candidate layout...
+echo [19/30] Building official candidate package...
 "%VENV_PY%" "src\build_official_candidate.py" || goto fail
 
 echo.
-echo [23/34] Fixing official metadata for BrainGlobe/ABBA...
-"%VENV_PY%" "src\v22_fix_metadata_compliance.py" --target official || goto fail
-
-echo.
-echo [24/34] Cleaning official structure labels...
+echo [20/30] Cleaning/enriching official candidate structures...
 "%VENV_PY%" "src\v15_cleanup_structures_labels.py" --stage official || goto fail
-
-echo.
-echo [25/34] Building official hierarchy...
 "%VENV_PY%" "src\v16_build_hierarchical_structures.py" --stage official || goto fail
-
-echo.
-echo [26/34] Normalizing official root to 997...
-"%VENV_PY%" "src\v29_fix_abba_structure_root.py" --target official || goto fail
-
-echo.
-echo [27/34] Enriching official structures for ABBA Java helpers...
-"%VENV_PY%" "src\v30_enrich_abba_java_structures.py" --target official || goto fail
-
-echo.
-echo [28/34] Ensuring official additional_references is empty...
+"%VENV_PY%" "src\v13_fix_brainglobe_metadata.py" --target official || goto fail
+"%VENV_PY%" "src\v22_fix_metadata_compliance.py" --target official || goto fail
 "%VENV_PY%" "src\v32_fix_no_additional_references.py" --target official || goto fail
-
-echo.
-echo [29/34] Reconfirming validated ABBA orientation on official NIfTI files...
-"%VENV_PY%" "src\v32_2_apply_validated_abba_orientation.py" --target official || goto fail
-
-echo.
-echo [30/34] Exporting official TIFF files...
-"%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target official || goto fail
-
-echo.
-echo [31/34] Creating masked official hemispheres.tiff...
-"%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target official || goto fail
-
-echo.
-echo [32/34] Validating official root compatibility...
+"%VENV_PY%" "src\v29_fix_abba_structure_root.py" --target official || goto fail
+"%VENV_PY%" "src\v30_enrich_abba_java_structures.py" --target official || goto fail
 "%VENV_PY%" "src\v27_validate_root_compatibility.py" --target official || goto fail
 
 echo.
-echo [33/34] Installing clean native BrainGlobe atlas...
-"%VENV_PY%" "src\v25_clean_native_brainglobe_install.py" --native-install --clean-install
-if errorlevel 1 (
-    echo Native install/load failed.
-    echo Review reports\v25_native_install_report.txt and reports\v25_final_status.txt
-    pause
-    exit /b 1
-)
+echo [21/30] Exporting official TIFFs and hemispheres...
+"%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target official || goto fail
+"%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target official || goto fail
+echo.
+echo [21b/30] Applying final ABBA orientation/display baseline to official atlas...
+"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target official --apply || goto fail
 
 echo.
-echo [34/34] Final installed metadata/channel cleanup...
+echo [22/30] Installing clean native BrainGlobe atlas...
+"%VENV_PY%" "src\v25_clean_native_brainglobe_install.py" --native-install --clean-install || goto fail
+
+echo.
+echo [23/30] Applying installed metadata/channel cleanup...
 "%VENV_PY%" "src\v32_fix_no_additional_references.py" --target installed || goto fail
-"%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target installed || goto fail
+echo.
+echo [23b/30] Applying final ABBA orientation/display baseline to installed BrainGlobe atlas...
+"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target installed --apply || goto fail
 
 echo.
-echo Optional ABBA visibility patch...
+echo [24/30] Applying LabelAtlas display baseline...
+"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target all --apply || goto fail
+
+echo.
+echo [25/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="ASK" (
     choice /C YN /M "Patch ABBA installations so local BrainGlobe atlases appear in ABBA?"
     if errorlevel 2 (set "PATCH_ABBA=NO") else (set "PATCH_ABBA=YES")
@@ -226,32 +222,46 @@ if /I "%PATCH_ABBA%"=="YES" (
 )
 
 echo.
+echo ============================================================
 echo Done.
-echo Review these reports first:
-echo   reports\v25_final_status.txt
-echo   reports\v27_root_validator_report_official.txt
-echo   reports\v31_hemispheres_report_official.txt
-echo   reports\v32_2_abba_orientation_report_official.txt
-echo   reports\v32_no_additional_refs_report_installed.txt
 echo.
-echo Restart ABBA/Fiji completely and open:
+echo ABBA display settings:
+echo   reference (Ch. 0) = ON
+echo   borders   (Ch. 1) = OFF
+echo.
+echo Open atlas:
 echo   paxinos_watson_rat_40um
 echo.
-echo Expected ABBA behavior after V32.2:
-echo   Coronal    = coronal and upright
-echo   Sagittal   = sagittal
-echo   Horizontal = horizontal
+echo Reports are in: reports\
+echo ============================================================
 echo.
 pause
-popd
 endlocal
 exit /b 0
 
+:missing_data
+echo.
+echo Required Paxinos source data are missing.
+echo See reports\release_data_preflight_summary.txt and reports\release_data_preflight_report.json.
+echo.
+echo Put minimal source files into:
+echo   data\raw\bluebrainheadmodels\
+echo.
+echo Required:
+echo   Paxinos_Watson_Atlas.nii.gz  or  Paxinos_Watson_Atlas.nii
+echo   Paxinos_Watson_Labels.txt
+echo Optional:
+echo   Paxinos_Watson_Labels_Cortex.txt
+echo.
+echo No MRI/reference-channel experiment was run.
+echo.
+pause
+exit /b 2
+
 :fail
 echo.
-echo Pipeline failed. No raw data were modified.
-echo Check reports\ and the console output above.
+echo Pipeline failed. Check reports\ and console output.
+echo No MRI/reference-channel experiment was run.
+echo.
 pause
-popd
-endlocal
 exit /b 1

@@ -1,77 +1,75 @@
-# Rat Paxinos BrainGlobe Builder
+# Rat Paxinos/Watson BrainGlobe Builder
 
-Version: **V32.2 Oriented Reference Prep**
+Builds and installs a local BrainGlobe-compatible Paxinos/Watson rat LabelAtlas for use in ABBA/Fiji.
 
-This package is based on the last stable V32 line and adds the orientation fix that was validated in ABBA.
+## End-user quick start
 
-## What is fixed
+1. Download/unzip this project release.
+2. Put the required BlueBrainHeadModels/Paxinos source files into:
 
-- ABBA button mapping is corrected by applying the validated display-space orientation:
-  - old internal axis model: `[LR, AP, SI] / LPI`
-  - new internal axis model: `[AP, SI, LR] / PIL`
-  - permutation: `perm=(1,2,0)`
-- ABBA `Coronal`, `Sagittal`, and `Horizontal` should now match the actual slice plane.
-- Coronal slices should be upright.
-- `hemispheres.tiff` is now masked to `annotation > 0`, instead of filling the full rectangular volume.
-- `hemispheres.tiff` is kept under the dedicated `hemispheres_file` metadata key and is not advertised as a normal display/reference channel in `metadata["files"]`.
-- The invalid old NeuroRat reference replacement is not included in the main pipeline.
+   ```text
+   data/raw/bluebrainheadmodels/
+   ```
 
-## What is not fixed yet
+3. Double-click:
 
-The current `reference.tiff` is still a synthetic label-edge reference. It is useful for loading tests, but it is not a Nissl/MRI-like anatomical background. Do not pretend otherwise; that is how software becomes folklore.
+   ```text
+   run_builder.bat
+   ```
 
-Use:
+4. Restart Fiji/ABBA completely.
+5. Open this atlas:
 
-```text
-RUN_SIGMA_REFERENCE_EXPERIMENT.bat
-```
+   ```text
+   paxinos_watson_rat_40um
+   ```
 
-for the separate, non-destructive SIGMA reference experiment.
+6. In ABBA, use this display state:
 
-## Main run
+   ```text
+   reference (Ch. 0) = ON
+   borders   (Ch. 1) = OFF
+   ```
 
-Copy this project folder to:
+The `reference` channel is a clean 2D coronal border display proxy generated from the Paxinos labels. The `borders` channel must stay OFF because ABBA's generated borders can create filled 3D-looking surfaces in MultiSlice view.
 
-```text
-G:\rat-paxinos-brainglobe-builder
-```
+## Current baseline
 
-Keep raw data in:
+- Active atlas: `paxinos_watson_rat_40um`
+- Mode: LabelAtlas-only
+- MRI/Waxholm/SIGMA/NeuroRat reference channels: postponed
+- Annotation files remain full label volumes for ABBA lookup
+- `annotation.tiff` and `annotation.nii.gz` must not be patched into border-only files
 
-```text
-data\raw\bluebrainheadmodels
-```
+## What this release does not do yet
 
-Then run:
+- It does not automatically download source data yet.
+- It does not create Nissl/MRI/additional reference channels.
+- It does not run Waxholm/SIGMA/NeuroRat registration experiments.
 
-```text
-run_builder.bat
-```
+These features are intentionally postponed until the LabelAtlas pipeline, release structure, and ontology/acronym review are stable.
 
-After completion, restart Fiji/ABBA completely and open:
+## Expected source data
 
-```text
-paxinos_watson_rat_40um
-```
-
-Expected ABBA behavior:
+The current release expects the raw source files to be present locally under:
 
 ```text
-Coronal    = coronal and upright
-Sagittal   = sagittal
-Horizontal = horizontal
+data/raw/bluebrainheadmodels/
 ```
 
-## Useful checks
+Automated download/repair/verification will be added later via the planned Data Manager.
+
+## Troubleshooting
+
+If ABBA shows filled gray/colored blocks instead of clean label boundaries, check this first:
 
 ```text
-reports\v32_2_abba_orientation_report_official.txt
-reports\v31_hemispheres_report_official.txt
-reports\v25_final_status.txt
+reference (Ch. 0) = ON
+borders   (Ch. 1) = OFF
 ```
 
-Optional direct viewer:
+Do not patch `annotation.tiff` to border-only. That breaks ABBA label display/lookup. Yes, we already stepped on that rake so future users can keep their shins intact.
 
-```text
-RUN_VIEW_INSTALLED_IN_NAPARI.bat
-```
+## Development notes
+
+This release candidate is based on the V32.17 LabelAtlas Display Baseline and intentionally removes MRI/reference-channel experiments from the active workflow. Experimental scripts may exist historically in the development repository, but they are not part of the end-user workflow.
