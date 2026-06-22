@@ -25,3 +25,12 @@ _paxinos_cleanup_backup_*/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local cleanup/archive folders
+_local_cleanup_archive/
+cleanup_audit/
+cleanup_audit*.bat
+resources/label_curation/deepseek_acronyms_977_raw.txt
+resources/label_curation/PUT_deepseek_acronyms_977_raw_HERE.txt
+resources/label_curation/*raw_HERE*.txt
+resources/label_curation/*.bak
