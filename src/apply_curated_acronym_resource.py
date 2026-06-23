@@ -14,7 +14,8 @@ CACHE_DIR_NAME = f"{ATLAS_NAME}_v1.0"
 ROOT_ID = 997
 RESOURCE_REL = Path("resources") / "label_curation" / "Paxinos_Watson_Labels_Acronyms_with_basis.csv"
 REPORT_REL = Path("reports") / "apply_curated_acronym_resource"
-CHECK_IDS = [997, 739, 348, 637, 709]
+CHECK_IDS = [997, 739, 348, 448, 449, 450, 451, 642, 646, 859, 861, 984, 985, 998800, 637, 709]
+APPLICABLE_REVIEW_STATUSES = {"approved", "display_only"}
 
 
 def stamp() -> str:
@@ -144,7 +145,7 @@ def build_approved_map(rows: List[Dict[str, str]]) -> Tuple[Dict[int, Dict[str, 
             blocked_rows.append({"line": line_no, "label_id": sid, "reason": "duplicate_resource_label_id", "first_seen_line": seen_ids[sid]})
             continue
         seen_ids[sid] = line_no
-        if status != "approved":
+        if status not in APPLICABLE_REVIEW_STATUSES:
             continue
         approved[sid] = row
 
@@ -231,11 +232,11 @@ def plan_for_structures(target_label: str, atlas_dir: Path, structures: List[Dic
         row = approved[sid]
         if sid not in by_id:
             # Root and approved rows missing from a target are a real mismatch, not a cute little surprise.
-            errors.append(f"Approved label_id {sid} is missing from {atlas_dir / 'structures.json'}")
+            errors.append(f"Applicable label_id {sid} is missing from {atlas_dir / 'structures.json'}")
             continue
         new_acronym, new_name = proposed_values(sid, row)
         if not new_acronym or not new_name:
-            errors.append(f"Approved row has empty proposed acronym/name for label_id {sid}")
+            errors.append(f"Applicable row has empty proposed acronym/name for label_id {sid}")
             continue
         idx = by_id[sid]
         st = output[idx]
@@ -262,7 +263,7 @@ def plan_for_structures(target_label: str, atlas_dir: Path, structures: List[Dic
     duplicate_final = duplicate_acronyms_after_apply(output)
     if duplicate_final:
         preview = "; ".join(f"{acr}: {ids}" for acr, ids in list(duplicate_final.items())[:30])
-        errors.append(f"Applying approved rows would leave/create duplicate final acronyms ({len(duplicate_final)}): {preview}")
+        errors.append(f"Applying approved/display_only rows would leave/create duplicate final acronyms ({len(duplicate_final)}): {preview}")
 
     preservation_errors = check_only_name_acronym_changed(structures, output)
     errors.extend(preservation_errors)
@@ -337,7 +338,7 @@ def main() -> int:
             approved, blocked_resource_rows, resource_warnings = build_approved_map(rows)
             warnings.extend(resource_warnings)
             report["resource_rows"] = len(rows)
-            report["approved_rows_including_root_lock"] = len(approved)
+            report["applicable_rows_including_root_lock"] = len(approved)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Could not read/parse resource CSV: {exc}")
 
