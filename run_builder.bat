@@ -31,45 +31,34 @@ for %%A in (%*) do (
 )
 
 echo [1/30] Checking Python installation...
-where py >nul 2>nul
-if %ERRORLEVEL%==0 (
-    py -3.11 --version >nul 2>nul
-    if !ERRORLEVEL!==0 (
-        set "PY_EXE=py -3.11"
-    ) else (
-        py -3.12 --version >nul 2>nul
-        if !ERRORLEVEL!==0 (
-            set "PY_EXE=py -3.12"
-        ) else (
-            py -3 --version >nul 2>nul
-            if !ERRORLEVEL!==0 set "PY_EXE=py -3"
-        )
-    )
-)
+call :detect_python
 
 if "%PY_EXE%"=="" (
-    where python >nul 2>nul
-    if %ERRORLEVEL%==0 set "PY_EXE=python"
-)
-
-if "%PY_EXE%"=="" (
-    echo Python was not found.
-    choice /C YN /M "Install Python 3.11 via winget now?"
-    if errorlevel 2 (
-        echo Aborted. Install Python 3.11 manually and run again.
-        pause
-        exit /b 1
-    )
+    echo Suitable Python 3.11/3.12 was not found.
     where winget >nul 2>nul
     if errorlevel 1 (
-        echo winget was not found. Install Python manually.
+        echo winget was not found. Install Python 3.11 or 3.12 manually and run again.
         pause
         exit /b 1
     )
-    winget install --id Python.Python.3.11 -e --source winget
-    echo Please restart this terminal/window and run again.
+
+    echo Installing Python 3.12 via winget...
+    winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo winget Python installation failed. Install Python 3.11 or 3.12 manually and run again.
+        pause
+        exit /b 1
+    )
+
+    echo Re-checking Python after winget install...
+    call :detect_python
+)
+
+if "%PY_EXE%"=="" (
+    echo Python was installed but is not visible in this terminal yet.
+    echo Close this terminal, open a new one, and run run_builder.bat again.
     pause
-    exit /b 0
+    exit /b 1
 )
 
 %PY_EXE% --version || goto fail
@@ -82,8 +71,17 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 
 echo.
+echo [2B/30] Ensuring pip is available in local virtual environment...
+"%VENV_PY%" -m pip --version >nul 2>nul
+if errorlevel 1 (
+    echo pip is missing in the virtual environment. Running ensurepip...
+    "%VENV_PY%" -m ensurepip --upgrade || goto fail
+)
+
+"%VENV_PY%" -m pip install --upgrade pip setuptools wheel || goto fail
+
+echo.
 echo [3/30] Installing Python requirements...
-"%VENV_PY%" -m pip install --upgrade pip || goto fail
 "%VENV_PY%" -m pip install -r "%REQ_FILE%" || goto fail
 
 echo.
@@ -242,6 +240,57 @@ echo.
 pause
 endlocal
 exit /b 0
+
+
+:detect_python
+set "PY_EXE="
+
+where py >nul 2>nul
+if not errorlevel 1 (
+    py -3.12 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)" >nul 2>nul
+    if not errorlevel 1 (
+        set "PY_EXE=py -3.12"
+        exit /b 0
+    )
+
+    py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>nul
+    if not errorlevel 1 (
+        set "PY_EXE=py -3.11"
+        exit /b 0
+    )
+)
+
+if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+    set PY_EXE="%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    exit /b 0
+)
+
+if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+    set PY_EXE="%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+    exit /b 0
+)
+
+if exist "%ProgramFiles%\Python312\python.exe" (
+    set PY_EXE="%ProgramFiles%\Python312\python.exe"
+    exit /b 0
+)
+
+if exist "%ProgramFiles%\Python311\python.exe" (
+    set PY_EXE="%ProgramFiles%\Python311\python.exe"
+    exit /b 0
+)
+
+where python >nul 2>nul
+if not errorlevel 1 (
+    python -c "import sys; raise SystemExit(0 if sys.version_info[:2] in [(3, 11), (3, 12)] else 1)" >nul 2>nul
+    if not errorlevel 1 (
+        set "PY_EXE=python"
+        exit /b 0
+    )
+)
+
+exit /b 0
+
 
 :missing_data
 echo.
