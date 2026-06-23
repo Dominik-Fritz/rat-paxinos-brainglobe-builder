@@ -34,3 +34,13 @@ resources/label_curation/deepseek_acronyms_977_raw.txt
 resources/label_curation/PUT_deepseek_acronyms_977_raw_HERE.txt
 resources/label_curation/*raw_HERE*.txt
 resources/label_curation/*.bak
+# Local generated atlas backups
+backups/
+resources/label_curation/*.backup_before_final_curation.tsv
+PATCH_README_APPLY_CURATED_ACRONYMS.md
+README_FINAL_LABEL_CURATION_PATCH*.md
+README_VESTIBULAR*.md
+rat_curated_acronym_repro_patch.diff
+APPLY_FINAL_LABEL_CURATION_DECISIONS.bat
+CHECK_FULL_CURATED_ACRONYMS.bat
+CHECK_VESTIBULAR_*.bat
