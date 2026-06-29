@@ -7,3 +7,4 @@ tifffile>=2024.2.12
 brainglobe-atlasapi>=2.0.0
 brainglobe-utils>=0.5.0
 packaging>=24.0
+scipy>=1.11

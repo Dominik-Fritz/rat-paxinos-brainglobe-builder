@@ -1,0 +1,49 @@
+{
+  "zenodo_record_id": "10926947",
+  "zenodo_api_url": "https://zenodo.org/api/records/10926947",
+  "requested_files": [
+    "Paxinos_Watson_Atlas.nii.gz",
+    "Paxinos_Watson_Labels.txt",
+    "Paxinos_Watson_Labels_Cortex.txt",
+    "SIGMA_Anatomical_Brain_Atlas.nii",
+    "SIGMA_Anatomical_Brain_Atlas_Labels.txt"
+  ],
+  "downloaded": [
+    {
+      "name": "Paxinos_Watson_Atlas.nii.gz",
+      "path": "G:\\rat-paxinos-brainglobe-builder\\data\\external\\bluebrain_headmodels_v1\\Paxinos_Watson_Atlas.nii.gz",
+      "md5": "6971da9c57ba4178f185d99a2c8ddac8",
+      "expected_md5": "6971da9c57ba4178f185d99a2c8ddac8",
+      "status": "downloaded"
+    },
+    {
+      "name": "Paxinos_Watson_Labels.txt",
+      "path": "G:\\rat-paxinos-brainglobe-builder\\data\\external\\bluebrain_headmodels_v1\\Paxinos_Watson_Labels.txt",
+      "md5": "2fb62017ca58c78f74c985506717f32a",
+      "expected_md5": "2fb62017ca58c78f74c985506717f32a",
+      "status": "downloaded"
+    },
+    {
+      "name": "Paxinos_Watson_Labels_Cortex.txt",
+      "path": "G:\\rat-paxinos-brainglobe-builder\\data\\external\\bluebrain_headmodels_v1\\Paxinos_Watson_Labels_Cortex.txt",
+      "md5": "5e12331e392257cf302adca271be83a8",
+      "expected_md5": "5e12331e392257cf302adca271be83a8",
+      "status": "downloaded"
+    },
+    {
+      "name": "SIGMA_Anatomical_Brain_Atlas.nii",
+      "path": "G:\\rat-paxinos-brainglobe-builder\\data\\external\\bluebrain_headmodels_v1\\SIGMA_Anatomical_Brain_Atlas.nii",
+      "md5": "6a21b5a4a8da4293d10803dc744fe07d",
+      "expected_md5": "6a21b5a4a8da4293d10803dc744fe07d",
+      "status": "downloaded"
+    },
+    {
+      "name": "SIGMA_Anatomical_Brain_Atlas_Labels.txt",
+      "path": "G:\\rat-paxinos-brainglobe-builder\\data\\external\\bluebrain_headmodels_v1\\SIGMA_Anatomical_Brain_Atlas_Labels.txt",
+      "md5": "03c77637c4201542f6cf84b97306335f",
+      "expected_md5": "03c77637c4201542f6cf84b97306335f",
+      "status": "downloaded"
+    }
+  ],
+  "missing_on_record": []
+}

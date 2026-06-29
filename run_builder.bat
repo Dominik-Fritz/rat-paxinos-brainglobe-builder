@@ -13,10 +13,11 @@ echo  LabelAtlas-only release candidate
 echo ============================================================
 echo.
 echo This runner builds/installs the Paxinos-Watson rat LabelAtlas.
+echo It installs the ABBA-tested synthetic soft label-derived reference channel.
 echo It does not build Waxholm/SIGMA/NeuroRat/MRI reference channels.
 echo.
 echo Required ABBA display after build:
-echo   reference (Ch. 0) = ON
+echo   reference (Ch. 0) = ON  [synthetic soft label-derived reference]
 echo   borders   (Ch. 1) = OFF
 echo.
 
@@ -212,7 +213,11 @@ echo [24/30] Applying LabelAtlas display baseline...
 "%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target all --apply || goto fail
 
 echo.
-echo [25/30] Optional ABBA visibility patch...
+echo [25/30] Applying ABBA-tested synthetic soft reference channel...
+"%VENV_PY%" "src\v34_apply_synthetic_soft_reference.py" --root "%BUILDER_ROOT%" --target all --apply || goto fail
+
+echo.
+echo [26/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="ASK" (
     choice /C YN /M "Patch ABBA installations so local BrainGlobe atlases appear in ABBA?"
     if errorlevel 2 (set "PATCH_ABBA=NO") else (set "PATCH_ABBA=YES")
@@ -228,7 +233,7 @@ echo ============================================================
 echo Done.
 echo.
 echo ABBA display settings:
-echo   reference (Ch. 0) = ON
+echo   reference (Ch. 0) = ON  [synthetic soft label-derived reference]
 echo   borders   (Ch. 1) = OFF
 echo.
 echo Open atlas:
@@ -306,7 +311,7 @@ echo   Paxinos_Watson_Labels.txt
 echo Optional:
 echo   Paxinos_Watson_Labels_Cortex.txt
 echo.
-echo No MRI/reference-channel experiment was run.
+echo No MRI/Waxholm/SIGMA/NeuroRat reference-channel experiment was run.
 echo.
 pause
 exit /b 2
@@ -314,7 +319,7 @@ exit /b 2
 :fail
 echo.
 echo Pipeline failed. Check reports\ and console output.
-echo No MRI/reference-channel experiment was run.
+echo No MRI/Waxholm/SIGMA/NeuroRat reference-channel experiment was run.
 echo.
 pause
 exit /b 1
