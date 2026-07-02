@@ -13,12 +13,13 @@ echo  LabelAtlas-only release candidate
 echo ============================================================
 echo.
 echo This runner builds/installs the Paxinos-Watson rat LabelAtlas.
-echo It installs the ABBA-tested synthetic soft label-derived reference channel.
 echo It does not build Waxholm/SIGMA/NeuroRat/MRI reference channels.
 echo.
 echo Required ABBA display after build:
-echo   reference (Ch. 0) = ON  [synthetic soft label-derived reference]
-echo   borders   (Ch. 1) = OFF
+echo   reference (Ch. 0)                         = ON
+echo   soft_region_fill_reference (Ch. 1)         = optional
+echo   distance_to_2d_outline_reference (Ch. 2)   = optional
+echo   native borders display source              = hidden by V44
 echo.
 
 set "PY_EXE="
@@ -163,8 +164,8 @@ echo [17/30] Exporting provisional TIFFs and hemispheres...
 "%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target provisional || goto fail
 "%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target provisional || goto fail
 echo.
-echo [17b/30] Applying final ABBA orientation/display baseline to provisional atlas...
-"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target provisional --apply || goto fail
+echo [17b/30] Leaving provisional atlas at native package stage...
+echo Final three-channel ABBA display layout is applied only after native BrainGlobe install.
 
 echo.
 echo [18/30] Validating provisional atlas package...
@@ -190,8 +191,8 @@ echo [21/30] Exporting official TIFFs and hemispheres...
 "%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target official || goto fail
 "%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target official || goto fail
 echo.
-echo [21b/30] Applying final ABBA orientation/display baseline to official atlas...
-"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target official --apply || goto fail
+echo [21b/30] Leaving official candidate at native package stage...
+echo Final three-channel ABBA display layout is applied only after native BrainGlobe install.
 
 echo.
 echo [22/30] Installing clean native BrainGlobe atlas...
@@ -205,19 +206,19 @@ echo.
 echo [23a/30] Applying curated Paxinos acronym resource to generated and installed metadata...
 "%VENV_PY%" "src\apply_curated_acronym_resource.py" --root "%BUILDER_ROOT%" --apply --require-installed || goto fail
 echo.
-echo [23b/30] Applying final ABBA orientation/display baseline to installed BrainGlobe atlas...
-"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target installed --apply || goto fail
+echo [23b/30] Applying final V43C three-channel ABBA display layout to installed BrainGlobe atlas...
+if not exist "src\v43c_restore_v43_distance_channel.py" (
+    echo ERROR: Missing src\v43c_restore_v43_distance_channel.py
+    echo Extract/apply the V43C files before running this builder.
+    goto fail
+)
+"%VENV_PY%" "src\v43c_restore_v43_distance_channel.py" --root "%BUILDER_ROOT%" --target installed --apply --strict || goto fail
 
 echo.
-echo [24/30] Applying LabelAtlas display baseline...
-"%VENV_PY%" "src\finalize_labelatlas_abba_baseline.py" --root "%BUILDER_ROOT%" --target all --apply || goto fail
+echo [24/30] Installed atlas display baseline applied.
 
 echo.
-echo [25/30] Applying ABBA-tested synthetic soft reference channel...
-"%VENV_PY%" "src\v34_apply_synthetic_soft_reference.py" --root "%BUILDER_ROOT%" --target all --apply || goto fail
-
-echo.
-echo [26/30] Optional ABBA visibility patch...
+echo [25/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="ASK" (
     choice /C YN /M "Patch ABBA installations so local BrainGlobe atlases appear in ABBA?"
     if errorlevel 2 (set "PATCH_ABBA=NO") else (set "PATCH_ABBA=YES")
@@ -229,12 +230,27 @@ if /I "%PATCH_ABBA%"=="YES" (
 )
 
 echo.
+echo [26/30] Hiding native ABBA borders display source...
+if not exist "src\v44_patch_abba_python_hide_native_borders.py" (
+    echo ERROR: Missing src\v44_patch_abba_python_hide_native_borders.py
+    echo Extract/apply the V44 file before running this builder.
+    goto fail
+)
+"%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
+if errorlevel 1 (
+    echo Normal ABBA Python discovery failed. Trying deep search...
+    "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --deep-search --fail-if-none || goto fail
+)
+
+echo.
 echo ============================================================
 echo Done.
 echo.
 echo ABBA display settings:
-echo   reference (Ch. 0) = ON  [synthetic soft label-derived reference]
-echo   borders   (Ch. 1) = OFF
+echo   reference (Ch. 0)                         = ON
+echo   soft_region_fill_reference (Ch. 1)         = optional
+echo   distance_to_2d_outline_reference (Ch. 2)   = optional
+echo   native borders display source              = hidden by V44
 echo.
 echo Open atlas:
 echo   paxinos_watson_rat_40um
@@ -311,7 +327,7 @@ echo   Paxinos_Watson_Labels.txt
 echo Optional:
 echo   Paxinos_Watson_Labels_Cortex.txt
 echo.
-echo No MRI/Waxholm/SIGMA/NeuroRat reference-channel experiment was run.
+echo No MRI/reference-channel experiment was run.
 echo.
 pause
 exit /b 2
@@ -319,7 +335,7 @@ exit /b 2
 :fail
 echo.
 echo Pipeline failed. Check reports\ and console output.
-echo No MRI/Waxholm/SIGMA/NeuroRat reference-channel experiment was run.
+echo No MRI/reference-channel experiment was run.
 echo.
 pause
 exit /b 1

@@ -1,27 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-V43C final three-channel ABBA display layout.
+V43C FINAL - based on the 0.2.4 final orientation/display logic.
 
-This is the finalization of the working V43 result:
+This replaces src\v43c_restore_v43_distance_channel.py.
+
+Critical point:
+The installed native BrainGlobe atlas can arrive as shape (409, 608, 286).
+That is the old/raw display orientation. The 0.2.4 release fixed this by applying:
+
+    old/raw axes [LR, AP, SI] -> final axes [AP, SI, LR]
+    perm = (1, 2, 0)
+    final shape = (608, 286, 409)
+
+This script restores exactly that behavior, then writes the final three useful ABBA
+display channels:
 
     Ch0 reference                         = 0.2.4-style 2D coronal label-outline proxy
-    Ch1 soft_region_fill_reference         = soft label-derived orientation reference
-    Ch2 distance_to_2d_outline_reference   = distance/orientation helper derived from the 2D outline
-    Ch3 native ABBA borders                = OFF / not part of the working layout
+    Ch1 soft_region_fill_reference         = soft label-derived helper
+    Ch2 distance_to_2d_outline_reference   = V43-style 2D per-slice inside-mask distance helper
 
-Important:
-- annotation.tiff and annotation.nii.gz are NOT modified.
-- structures.json is NOT modified.
-- ABBAs native borders channel can still exist because ABBA derives it from the annotation.
-  We do not use it anymore.
-- This script removes obsolete experimental active extra channels:
-    distance_to_boundary_reference
-    label_boundary_display_reference
-    clean_coronal_outline_reference
+It also sets:
+    additional_references = ["soft_region_fill_reference", "distance_to_2d_outline_reference"]
 
-The point is to reproduce the old 0.2.4 display behavior where the useful
-label display lived in reference.tiff, then add exactly two useful helper channels.
+Native ABBA borders are handled separately by V44.
 """
 
 from __future__ import annotations
@@ -37,18 +39,15 @@ from typing import Any, Dict, List, Optional, Tuple
 ATLAS_NAME = "paxinos_watson_rat_40um"
 CACHE_DIR = f"{ATLAS_NAME}_v1.0"
 REPORT_DIR_NAME = "v43c_restore_v43_distance_channel"
-EXPECTED_SHAPE = (608, 286, 409)
+
+FINAL_SHAPE = (608, 286, 409)       # [AP, SI, LR], validated old 0.2.4 ABBA layout
+RAW_OR_OLD_SHAPE = (409, 608, 286)  # [LR, AP, SI], native/failed display orientation
+VALIDATED_PERM = (1, 2, 0)
+VALIDATED_ORIENTATION = "PIL"
 
 SOFT_NAME = "soft_region_fill_reference"
 DISTANCE_NAME = "distance_to_2d_outline_reference"
-
 ACTIVE_EXTRA_NAMES = [SOFT_NAME, DISTANCE_NAME]
-
-OBSOLETE_EXTRA_NAMES = [
-    "distance_to_boundary_reference",
-    "label_boundary_display_reference",
-    "clean_coronal_outline_reference",
-]
 
 OBSOLETE_EXTRA_FILES = [
     "distance_to_boundary_reference.tiff",
@@ -58,7 +57,6 @@ OBSOLETE_EXTRA_FILES = [
     "clean_coronal_outline_reference.tiff",
     "clean_coronal_outline_reference.nii.gz",
 ]
-
 ACTIVE_FILES = [
     "reference.tiff",
     "reference.nii.gz",
@@ -67,7 +65,6 @@ ACTIVE_FILES = [
     f"{DISTANCE_NAME}.tiff",
     f"{DISTANCE_NAME}.nii.gz",
 ]
-
 OBSOLETE_FILE_KEYS = [
     "distance_to_boundary_reference_tiff",
     "distance_to_boundary_reference_nifti",
@@ -76,7 +73,6 @@ OBSOLETE_FILE_KEYS = [
     "clean_coronal_outline_reference_tiff",
     "clean_coronal_outline_reference_nifti",
 ]
-
 EXPERIMENTAL_META_KEYS_TO_REMOVE = [
     "synthetic_reference_channels",
     "additional_references_note",
@@ -101,9 +97,7 @@ def import_image_libs():
         import nibabel as nib  # type: ignore
         import tifffile  # type: ignore
     except Exception as exc:
-        raise RuntimeError(
-            "Missing numpy/nibabel/tifffile. Run run_builder.bat once so the local .venv is populated."
-        ) from exc
+        raise RuntimeError("Missing numpy/nibabel/tifffile in the active environment.") from exc
     return np, nib, tifffile
 
 
@@ -117,7 +111,7 @@ def md5_file(path: Path, chunk_size: int = 1024 * 1024) -> Optional[str]:
     return h.hexdigest()
 
 
-def target_dirs(project_root: Path, target: str) -> List[Tuple[str, Path]]:
+def atlas_dirs(project_root: Path, target: str) -> List[Tuple[str, Path]]:
     dirs: List[Tuple[str, Path]] = []
     if target in {"all", "provisional"}:
         dirs.append(("provisional", project_root / "data" / "output" / "brainglobe_provisional" / ATLAS_NAME))
@@ -141,17 +135,16 @@ def write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def backup_file(project_root: Path, target_label: str, path: Path, run_stamp: str, actions: List[Dict[str, Any]], dry_run: bool) -> Optional[Path]:
+def backup_file(project_root: Path, target_label: str, path: Path, run_stamp: str, actions: List[Dict[str, Any]], dry_run: bool) -> None:
     if not path.exists():
-        return None
+        return
     dst = project_root / "backups" / REPORT_DIR_NAME / run_stamp / target_label / path.name
     if dry_run:
         actions.append({"action": "would_backup", "src": str(path), "dst": str(dst)})
-        return dst
+        return
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, dst)
     actions.append({"action": "backup", "src": str(path), "dst": str(dst)})
-    return dst
 
 
 def remove_file(path: Path, actions: List[Dict[str, Any]], dry_run: bool) -> None:
@@ -165,78 +158,87 @@ def remove_file(path: Path, actions: List[Dict[str, Any]], dry_run: bool) -> Non
     actions.append({"action": "remove_obsolete_extra", "path": str(path)})
 
 
-def load_annotation(atlas_dir: Path):
+def as_label_uint16(arr):
+    np, _nib, _tifffile = import_image_libs()
+    if not np.issubdtype(arr.dtype, np.integer):
+        arr = np.rint(arr)
+    return np.clip(arr, 0, 65535).astype(np.uint16, copy=False)
+
+
+def maybe_reorient_array(arr, actions: List[Dict[str, Any]], label: str):
+    np, _nib, _tifffile = import_image_libs()
+    shape = tuple(int(x) for x in arr.shape)
+    if shape == FINAL_SHAPE:
+        actions.append({"action": "orientation_already_final", "label": label, "shape": list(shape)})
+        return np.ascontiguousarray(arr), False
+    if shape == RAW_OR_OLD_SHAPE:
+        out = np.ascontiguousarray(np.transpose(arr, VALIDATED_PERM))
+        actions.append({
+            "action": "apply_validated_orientation_perm",
+            "label": label,
+            "old_shape": list(shape),
+            "new_shape": list(out.shape),
+            "perm": list(VALIDATED_PERM),
+            "axis_model": "old [LR,AP,SI] -> final [AP,SI,LR]",
+        })
+        return out, True
+    actions.append({"action": "unexpected_shape_no_orientation_change", "label": label, "shape": list(shape)})
+    return np.ascontiguousarray(arr), False
+
+
+def permuted_affine(affine):
+    np, _nib, _tifffile = import_image_libs()
+    new_aff = np.array(affine, dtype=float, copy=True)
+    try:
+        new_aff[:3, :3] = affine[:3, list(VALIDATED_PERM)]
+    except Exception:
+        pass
+    return new_aff
+
+
+def load_annotation(atlas_dir: Path, actions: List[Dict[str, Any]]):
     np, nib, tifffile = import_image_libs()
     ann_nii = atlas_dir / "annotation.nii.gz"
     ann_tiff = atlas_dir / "annotation.tiff"
 
     if ann_nii.exists():
         img = nib.load(str(ann_nii))
-        arr = np.asarray(np.asanyarray(img.dataobj))
-        if not np.issubdtype(arr.dtype, np.integer):
-            arr = np.rint(arr)
-        arr = np.clip(arr, 0, 65535).astype(np.uint16, copy=False)
-        return arr, img.affine, img.header.copy(), "annotation.nii.gz"
+        arr = as_label_uint16(np.asanyarray(img.dataobj))
+        arr2, changed = maybe_reorient_array(arr, actions, "annotation.nii.gz")
+        affine = permuted_affine(img.affine) if changed else img.affine
+        header = img.header.copy()
+        return arr2, affine, header, "annotation.nii.gz"
 
     if ann_tiff.exists():
-        arr = np.asarray(tifffile.imread(str(ann_tiff)))
-        if not np.issubdtype(arr.dtype, np.integer):
-            arr = np.rint(arr)
-        arr = np.clip(arr, 0, 65535).astype(np.uint16, copy=False)
+        arr = as_label_uint16(tifffile.imread(str(ann_tiff)))
+        arr2, _changed = maybe_reorient_array(arr, actions, "annotation.tiff")
         affine = np.diag([0.04, 0.04, 0.04, 1.0])
-        return arr, affine, None, "annotation.tiff"
+        return arr2, affine, None, "annotation.tiff"
 
     raise FileNotFoundError(f"Missing annotation.nii.gz/annotation.tiff in {atlas_dir}")
 
 
-def compute_2d_outline_uint16(labels, slice_axis: int, include_outer_boundary: bool = True):
-    """
-    Build a 0.2.4-style 2D coronal in-plane label-outline proxy.
-
-    Axis slice_axis is the stack axis. Within each slice, only in-plane neighbor
-    label transitions are used. Previous/next slice comparisons are deliberately
-    ignored, preventing hard regional start/end faces from becoming filled slabs.
-    """
+def compute_2d_coronal_edges_uint16(annotation):
     np, _nib, _tifffile = import_image_libs()
+    if annotation.ndim != 3:
+        raise ValueError(f"Expected 3D annotation, got {annotation.shape}")
+    edges = np.zeros(annotation.shape, dtype=np.uint8)
 
-    if slice_axis not in {0, 1, 2}:
-        raise ValueError(f"slice_axis must be 0, 1, or 2, got {slice_axis}")
+    # Final shape axis model: [AP, SI, LR]. Axis 0 is coronal stack.
+    # Only in-plane borders: axes 1 and 2. No previous/next slice comparison.
+    a = annotation[:, :-1, :]
+    b = annotation[:, 1:, :]
+    diff = (a != b) & ((a != 0) | (b != 0))
+    edges[:, :-1, :] |= diff
+    edges[:, 1:, :] |= diff
 
-    work = np.moveaxis(labels, slice_axis, 0)
-    outline = np.zeros(work.shape, dtype=np.uint16)
+    a = annotation[:, :, :-1]
+    b = annotation[:, :, 1:]
+    diff = (a != b) & ((a != 0) | (b != 0))
+    edges[:, :, :-1] |= diff
+    edges[:, :, 1:] |= diff
 
-    for i in range(work.shape[0]):
-        sl = work[i]
-        out = np.zeros(sl.shape, dtype=bool)
-
-        diff = sl[:, 1:] != sl[:, :-1]
-        if include_outer_boundary:
-            active = diff & ((sl[:, 1:] != 0) | (sl[:, :-1] != 0))
-            out[:, 1:] |= active
-            out[:, :-1] |= active
-        else:
-            out[:, 1:] |= diff & (sl[:, 1:] != 0) & (sl[:, :-1] != 0)
-            out[:, :-1] |= diff & (sl[:, :-1] != 0) & (sl[:, 1:] != 0)
-
-        diff = sl[1:, :] != sl[:-1, :]
-        if include_outer_boundary:
-            active = diff & ((sl[1:, :] != 0) | (sl[:-1, :] != 0))
-            out[1:, :] |= active
-            out[:-1, :] |= active
-        else:
-            out[1:, :] |= diff & (sl[1:, :] != 0) & (sl[:-1, :] != 0)
-            out[:-1, :] |= diff & (sl[:-1, :] != 0) & (sl[1:, :] != 0)
-
-        if include_outer_boundary:
-            mask = sl != 0
-            out[0, :] |= mask[0, :]
-            out[-1, :] |= mask[-1, :]
-            out[:, 0] |= mask[:, 0]
-            out[:, -1] |= mask[:, -1]
-
-        outline[i][out] = 65535
-
-    return np.moveaxis(outline, 0, slice_axis).astype(np.uint16, copy=False)
+    return edges.astype(np.uint16) * np.uint16(65535)
 
 
 def make_soft_region_fill(labels, sigma: float):
@@ -244,7 +246,6 @@ def make_soft_region_fill(labels, sigma: float):
     lab64 = labels.astype(np.uint64, copy=False)
     out = np.zeros(labels.shape, dtype=np.uint8)
     mask = labels != 0
-
     hashed = ((lab64 * np.uint64(2654435761)) >> np.uint64(24)) & np.uint64(255)
     out[mask] = hashed.astype(np.uint8)[mask]
     out[mask & (out == 0)] = 1
@@ -257,27 +258,10 @@ def make_soft_region_fill(labels, sigma: float):
             out = np.clip(soft, 0, 255).astype(np.uint8)
         except Exception:
             pass
-
     return out
 
 
-def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0):
-    """
-    V43C restores the V43-style Ch2.
-
-    V43B accidentally changed Ch2 into an inverted full-volume halo, which ABBA displays
-    as pale filled sections. The working V43 channel was a 2D per-coronal-slice distance
-    map inside the atlas mask:
-
-    - computed independently for each coronal slice
-    - distance to the 0.2.4-style in-plane outline
-    - outside the annotation mask stays zero
-    - normalized per slice
-    - uint16 output, like the old working V43 channel
-
-    Result:
-        Ch2 is an optional orientation/helper channel again, not a washed-out slab festival.
-    """
+def make_distance_to_outline(labels, outline_uint16):
     np, _nib, _tifffile = import_image_libs()
     mask = labels != 0
     edge = outline_uint16 != 0
@@ -285,26 +269,18 @@ def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0)
 
     try:
         from scipy.ndimage import distance_transform_edt  # type: ignore
-
-        # Axis 0 is the coronal/AP stack in this atlas layout.
         for i in range(labels.shape[0]):
             m = mask[i]
             if not m.any():
                 continue
-
             e = edge[i]
             dist = distance_transform_edt(~e).astype(np.float32)
             dist[~m] = 0
-
-            # Keep the old V43 behavior: normalize each slice.
             max_val = float(dist.max())
             if max_val > 0:
                 dist = dist / max_val
-
             out[i] = np.clip(dist * 65535.0, 0, 65535).astype(np.uint16)
-
     except Exception:
-        # Fallback: still keep outside mask zero and use the outline itself.
         out[edge & mask] = np.uint16(65535)
 
     return out
@@ -331,23 +307,19 @@ def write_nifti(path: Path, arr, affine, header, actions: List[Dict[str, Any]], 
     actions.append({"action": "write_nifti", "path": str(path), "shape": list(arr.shape), "dtype": str(arr.dtype)})
 
 
-def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distance_ref, sigma: float, slice_axis: int, actions: List[Dict[str, Any]], dry_run: bool) -> Dict[str, Any]:
+def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distance_ref, sigma: float, actions: List[Dict[str, Any]], dry_run: bool) -> Dict[str, Any]:
     meta_path = atlas_dir / "metadata.json"
     meta = read_json(meta_path)
 
     for key in EXPERIMENTAL_META_KEYS_TO_REMOVE:
-        if key in meta:
-            meta.pop(key, None)
-            actions.append({"action": "remove_metadata_key", "key": key})
+        meta.pop(key, None)
 
     files = meta.get("files")
     if not isinstance(files, dict):
         files = {}
 
     for key in OBSOLETE_FILE_KEYS:
-        if key in files:
-            files.pop(key, None)
-            actions.append({"action": "remove_obsolete_file_key", "key": key})
+        files.pop(key, None)
 
     files.update({
         "reference_tiff": "reference.tiff",
@@ -367,37 +339,10 @@ def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distanc
             "BlueBrainHeadModels v1 / Paxinos-Watson atlas digitization, DOI: 10.5281/zenodo.10926947.",
         ]
 
-    baseline = meta.get("labelatlas_display_baseline")
-    if not isinstance(baseline, dict):
-        baseline = {}
-
-    # Avoid carrying previous contradictory notes forward.
-    for key in [
-        "v41_restore_024_display_logic",
-        "v42_soft_plus_clean_coronal_outline",
-    ]:
-        baseline.pop(key, None)
-
-    baseline["v43c_final_three_channel_abba_layout"] = {
-        "applied": True,
-        "created_at": now(),
-        "channels": {
-            "Ch0_reference": "0.2.4-style 2D coronal in-plane label-outline proxy",
-            "Ch1_soft_region_fill_reference": "soft label-derived orientation reference",
-            "Ch2_distance_to_2d_outline_reference": "V43-style 2D per-slice inside-mask distance helper derived from the 0.2.4 outline proxy",
-            "Ch3_native_borders": "OFF / not used",
-        },
-        "slice_axis_for_outline": int(slice_axis),
-        "annotation_changed": False,
-        "reason": (
-            "The old 0.2.4 release displayed useful label outlines through reference.tiff, "
-            "not through ABBAs native borders renderer. V43C makes that layout final and adds two useful helper channels."
-        ),
-    }
-
     meta.update({
         "atlas_name": ATLAS_NAME,
         "name": ATLAS_NAME,
+        "orientation": VALIDATED_ORIENTATION,
         "reference_file": "reference.tiff",
         "annotation_file": "annotation.tiff",
         "reference_shape": [int(x) for x in reference_outline.shape],
@@ -405,38 +350,35 @@ def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distanc
         "shape": [int(x) for x in labels.shape],
         "files": files,
         "source_references": source_refs,
-
-        # This is the final useful three-channel layout. ABBA will still list native borders, but we do not use it.
         "additional_references": ACTIVE_EXTRA_NAMES,
-
-        "reference_strategy": "v43c_final_024_label_outline_reference_with_two_helper_channels",
+        "reference_strategy": "v43c_final_three_channel_abba_layout_024_orientation_restored",
         "reference_channel_type": "0.2.4-style 2D coronal in-plane label-outline proxy",
         "reference_channel_is_external_anatomy": False,
         "reference_channel_is_real_nissl_mri": False,
-
+        "v32_2_validated_abba_orientation": {
+            "applied": True,
+            "perm": list(VALIDATED_PERM),
+            "old_axis_model": "[LR, AP, SI]",
+            "new_axis_model": "[AP, SI, LR]",
+            "orientation": VALIDATED_ORIENTATION,
+            "reason": "Restores the working 0.2.4 ABBA coronal/sagittal/horizontal display baseline.",
+        },
         "soft_region_fill_reference": {
             "filename_tiff": f"{SOFT_NAME}.tiff",
             "filename_nifti": f"{SOFT_NAME}.nii.gz",
             "intended_abba_channel": "Ch. 1",
             "derived_from": "annotation label volume",
             "sigma": float(sigma),
-            "warning": "Synthetic label-derived display helper. Not Nissl/MRI/external anatomy.",
         },
-
         "distance_to_2d_outline_reference": {
             "filename_tiff": f"{DISTANCE_NAME}.tiff",
             "filename_nifti": f"{DISTANCE_NAME}.nii.gz",
             "intended_abba_channel": "Ch. 2",
             "derived_from": "0.2.4-style 2D coronal label-outline proxy",
-            "warning": "Synthetic display helper. Use native ABBA borders OFF.",
         },
-
-        "labelatlas_display_baseline": baseline,
-
         "warning": (
-            "Final ABBA display recommendation: reference Ch.0 ON, soft_region_fill_reference Ch.1 optional, "
-            "distance_to_2d_outline_reference Ch.2 optional, native ABBA borders Ch.3 OFF. "
-            "Annotation files are unchanged and remain the real atlas labels."
+            "Final ABBA display: reference Ch0 ON, soft_region_fill_reference Ch1 optional, "
+            "distance_to_2d_outline_reference Ch2 optional. Native borders source is hidden by V44."
         ),
     })
 
@@ -451,45 +393,35 @@ def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distanc
 
 def validate_layout(atlas_dir: Path) -> Dict[str, Any]:
     meta = read_json(atlas_dir / "metadata.json")
-    add_refs = meta.get("additional_references")
-
-    active_present = [name for name in ACTIVE_FILES if (atlas_dir / name).exists()]
-    obsolete_present = [name for name in OBSOLETE_EXTRA_FILES if (atlas_dir / name).exists()]
-
     files = meta.get("files") if isinstance(meta.get("files"), dict) else {}
-    obsolete_keys_present = [key for key in OBSOLETE_FILE_KEYS if key in files]
-
+    obsolete_present = [name for name in OBSOLETE_EXTRA_FILES if (atlas_dir / name).exists()]
+    obsolete_keys = [key for key in OBSOLETE_FILE_KEYS if key in files]
+    active_present = [name for name in ACTIVE_FILES if (atlas_dir / name).exists()]
+    shape_ok = tuple(meta.get("annotation_shape", [])) == FINAL_SHAPE or tuple(meta.get("shape", [])) == FINAL_SHAPE
     ok = (
-        add_refs == ACTIVE_EXTRA_NAMES
+        shape_ok
+        and meta.get("additional_references") == ACTIVE_EXTRA_NAMES
         and all((atlas_dir / name).exists() for name in ACTIVE_FILES)
         and not obsolete_present
-        and not obsolete_keys_present
+        and not obsolete_keys
         and (atlas_dir / "annotation.tiff").exists()
     )
-
     return {
         "ok": bool(ok),
-        "additional_references": add_refs,
+        "shape_ok": bool(shape_ok),
+        "metadata_shape": meta.get("shape"),
+        "metadata_annotation_shape": meta.get("annotation_shape"),
+        "additional_references": meta.get("additional_references"),
         "active_files_present": active_present,
         "obsolete_extra_files_present": obsolete_present,
-        "obsolete_extra_file_keys_present": obsolete_keys_present,
+        "obsolete_extra_file_keys_present": obsolete_keys,
         "reference_tiff_exists": (atlas_dir / "reference.tiff").exists(),
         "annotation_tiff_exists": (atlas_dir / "annotation.tiff").exists(),
         "metadata_path": str(atlas_dir / "metadata.json"),
     }
 
 
-def process_target(
-    project_root: Path,
-    label: str,
-    atlas_dir: Path,
-    run_stamp: str,
-    sigma: float,
-    slice_axis: int,
-    max_distance: float,
-    dry_run: bool,
-    validate_only: bool,
-) -> Dict[str, Any]:
+def process_target(project_root: Path, label: str, atlas_dir: Path, run_stamp: str, sigma: float, dry_run: bool, validate_only: bool) -> Dict[str, Any]:
     np, _nib, _tifffile = import_image_libs()
     actions: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -516,57 +448,44 @@ def process_target(
         return result
 
     try:
-        annotation_tiff = atlas_dir / "annotation.tiff"
-        annotation_nii = atlas_dir / "annotation.nii.gz"
-        annotation_tiff_md5_before = md5_file(annotation_tiff)
-        annotation_nii_md5_before = md5_file(annotation_nii)
-
-        for name in [
-            "metadata.json",
-            *ACTIVE_FILES,
-            *OBSOLETE_EXTRA_FILES,
-        ]:
+        for name in ["metadata.json", "annotation.tiff", "annotation.nii.gz", *ACTIVE_FILES, *OBSOLETE_EXTRA_FILES]:
             backup_file(project_root, label, atlas_dir / name, run_stamp, actions, dry_run)
 
-        labels, affine, header, ann_source = load_annotation(atlas_dir)
+        labels, affine, header, ann_source = load_annotation(atlas_dir, actions)
+        labels = as_label_uint16(labels)
 
-        if tuple(labels.shape) != EXPECTED_SHAPE:
-            errors.append(f"Unexpected annotation shape {tuple(labels.shape)}; expected {EXPECTED_SHAPE}.")
+        if tuple(labels.shape) != FINAL_SHAPE:
+            errors.append(f"Final annotation shape is {tuple(labels.shape)}, expected {FINAL_SHAPE}.")
             result["passed"] = False
+            result["annotation_shape"] = [int(x) for x in labels.shape]
             result["validation"] = validate_layout(atlas_dir)
             return result
 
-        reference_outline = compute_2d_outline_uint16(labels, slice_axis=slice_axis, include_outer_boundary=True)
+        reference_outline = compute_2d_coronal_edges_uint16(labels)
         soft_ref = make_soft_region_fill(labels, sigma=sigma)
-        distance_ref = make_distance_to_outline(labels, reference_outline, max_distance=max_distance)
+        distance_ref = make_distance_to_outline(labels, reference_outline)
 
-        write_tiff(atlas_dir / "reference.tiff", reference_outline, actions, dry_run)
+        write_nifti(atlas_dir / "annotation.nii.gz", labels, affine, header, actions, dry_run)
+        write_tiff(atlas_dir / "annotation.tiff", labels, actions, dry_run)
+
         write_nifti(atlas_dir / "reference.nii.gz", reference_outline, affine, header, actions, dry_run)
+        write_tiff(atlas_dir / "reference.tiff", reference_outline, actions, dry_run)
 
-        write_tiff(atlas_dir / f"{SOFT_NAME}.tiff", soft_ref, actions, dry_run)
         write_nifti(atlas_dir / f"{SOFT_NAME}.nii.gz", soft_ref, affine, header, actions, dry_run)
+        write_tiff(atlas_dir / f"{SOFT_NAME}.tiff", soft_ref, actions, dry_run)
 
-        write_tiff(atlas_dir / f"{DISTANCE_NAME}.tiff", distance_ref, actions, dry_run)
         write_nifti(atlas_dir / f"{DISTANCE_NAME}.nii.gz", distance_ref, affine, header, actions, dry_run)
+        write_tiff(atlas_dir / f"{DISTANCE_NAME}.tiff", distance_ref, actions, dry_run)
 
         for name in OBSOLETE_EXTRA_FILES:
             remove_file(atlas_dir / name, actions, dry_run)
 
-        meta = patch_metadata(atlas_dir, labels, reference_outline, soft_ref, distance_ref, sigma, slice_axis, actions, dry_run)
-
-        annotation_tiff_md5_after = md5_file(annotation_tiff)
-        annotation_nii_md5_after = md5_file(annotation_nii)
-        annotation_unchanged = (
-            annotation_tiff_md5_before == annotation_tiff_md5_after
-            and annotation_nii_md5_before == annotation_nii_md5_after
-        )
-
-        if not annotation_unchanged:
-            errors.append("Annotation checksum changed. This should never happen.")
+        meta = patch_metadata(atlas_dir, labels, reference_outline, soft_ref, distance_ref, sigma, actions, dry_run)
 
         validation = validate_layout(atlas_dir) if not dry_run else {
             "ok": True,
-            "dry_run_validation": True,
+            "shape_ok": True,
+            "metadata_shape": list(FINAL_SHAPE),
             "additional_references": ACTIVE_EXTRA_NAMES,
             "active_files_present": ACTIVE_FILES,
             "obsolete_extra_files_present": [],
@@ -574,18 +493,15 @@ def process_target(
         }
 
         result.update({
-            "passed": bool(validation.get("ok")) and annotation_unchanged and not errors,
+            "passed": bool(validation.get("ok")) and not errors,
             "annotation_source": ann_source,
             "annotation_shape": [int(x) for x in labels.shape],
-            "annotation_tiff_md5_before": annotation_tiff_md5_before,
-            "annotation_tiff_md5_after": annotation_tiff_md5_after,
-            "annotation_nii_md5_before": annotation_nii_md5_before,
-            "annotation_nii_md5_after": annotation_nii_md5_after,
-            "annotation_unchanged": annotation_unchanged,
+            "reference_shape": [int(x) for x in reference_outline.shape],
+            "metadata_shape": meta.get("shape"),
+            "metadata_additional_references": meta.get("additional_references"),
             "reference_outline_nonzero_fraction": float(np.count_nonzero(reference_outline) / reference_outline.size),
             "soft_reference_nonzero_fraction": float(np.count_nonzero(soft_ref) / soft_ref.size),
             "distance_reference_nonzero_fraction": float(np.count_nonzero(distance_ref) / distance_ref.size),
-            "metadata_additional_references": meta.get("additional_references"),
             "validation": validation,
         })
 
@@ -600,58 +516,41 @@ def process_target(
 def write_reports(project_root: Path, report: Dict[str, Any]) -> None:
     report_dir = project_root / "reports" / REPORT_DIR_NAME
     report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "v43c_restore_v43_distance_channel_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    json_path = report_dir / "v43c_restore_v43_distance_channel_report.json"
-    md_path = report_dir / "V43C_FINALIZE_THREE_CHANNEL_ABBA_LAYOUT_REPORT.md"
-    txt_path = report_dir / "v43c_restore_v43_distance_channel_summary.txt"
-
-    json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    lines: List[str] = []
-    lines.append("# V43C Final Three-Channel ABBA Layout Report\n\n")
-    lines.append(f"- Generated: `{report['generated_at']}`\n")
-    lines.append(f"- Project root: `{report['project_root']}`\n")
-    lines.append(f"- Dry run: `{report['dry_run']}`\n")
-    lines.append(f"- Validate only: `{report['validate_only']}`\n")
-    lines.append(f"- PASSED: `{report['passed']}`\n\n")
-
-    lines.append("## Final ABBA working layout\n\n")
-    lines.append("```text\n")
-    lines.append("reference (Ch. 0)                         ON    # 0.2.4-style 2D label outline\n")
-    lines.append("soft_region_fill_reference (Ch. 1)         optional\n")
-    lines.append("distance_to_2d_outline_reference (Ch. 2)   optional\n")
-    lines.append("borders (native Ch. 3)                     OFF / not used\n")
-    lines.append("```\n\n")
-
-    lines.append("## Targets\n\n")
+    md = [
+        "# V43C Final Three-Channel ABBA Layout Report\n\n",
+        f"- Generated: `{report['generated_at']}`\n",
+        f"- Project root: `{report['project_root']}`\n",
+        f"- Dry run: `{report['dry_run']}`\n",
+        f"- Validate only: `{report['validate_only']}`\n",
+        f"- PASSED: `{report['passed']}`\n\n",
+        "## Final ABBA working layout\n\n",
+        "```text\n",
+        "reference (Ch. 0)                         ON\n",
+        "soft_region_fill_reference (Ch. 1)         optional\n",
+        "distance_to_2d_outline_reference (Ch. 2)   optional\n",
+        "native borders display source              hidden by V44\n",
+        "```\n\n",
+    ]
     for target in report.get("targets", []):
         validation = target.get("validation", {})
-        lines.append(f"### {target.get('target')}\n\n")
-        lines.append(f"- Exists: `{target.get('exists')}`\n")
-        lines.append(f"- Passed: `{target.get('passed')}`\n")
-        lines.append(f"- Atlas dir: `{target.get('atlas_dir')}`\n")
-        lines.append(f"- Additional references: `{validation.get('additional_references')}`\n")
-        lines.append(f"- Active files present: `{validation.get('active_files_present')}`\n")
-        lines.append(f"- Obsolete files present: `{validation.get('obsolete_extra_files_present')}`\n")
-        lines.append(f"- Annotation unchanged: `{target.get('annotation_unchanged')}`\n")
-        lines.append(f"- Reference outline nonzero fraction: `{target.get('reference_outline_nonzero_fraction')}`\n")
-        lines.append(f"- Soft reference nonzero fraction: `{target.get('soft_reference_nonzero_fraction')}`\n")
-        lines.append(f"- Distance reference nonzero fraction: `{target.get('distance_reference_nonzero_fraction')}`\n")
+        md.extend([
+            f"### {target.get('target')}\n\n",
+            f"- Exists: `{target.get('exists')}`\n",
+            f"- Passed: `{target.get('passed')}`\n",
+            f"- Atlas dir: `{target.get('atlas_dir')}`\n",
+            f"- Annotation shape: `{target.get('annotation_shape')}`\n",
+            f"- Additional references: `{validation.get('additional_references')}`\n",
+            f"- Active files present: `{validation.get('active_files_present')}`\n",
+            f"- Obsolete files present: `{validation.get('obsolete_extra_files_present')}`\n",
+        ])
         if target.get("errors"):
-            lines.append("- Errors:\n")
+            md.append("- Errors:\n")
             for e in target["errors"]:
-                lines.append(f"  - `{e}`\n")
-        if target.get("warnings"):
-            lines.append("- Warnings:\n")
-            for w in target["warnings"]:
-                lines.append(f"  - `{w}`\n")
-        lines.append("\n")
-
-    lines.append("## Notes\n\n")
-    lines.append("The native ABBA borders channel can still appear because ABBA derives it from the annotation. It is deliberately not used.\n")
-    lines.append("Annotation files are preserved and remain the real atlas labels.\n")
-
-    md_path.write_text("".join(lines), encoding="utf-8")
+                md.append(f"  - `{e}`\n")
+        md.append("\n")
+    (report_dir / "V43C_FINALIZE_THREE_CHANNEL_ABBA_LAYOUT_REPORT.md").write_text("".join(md), encoding="utf-8")
 
     txt = [
         "V43C Final Three-Channel ABBA Layout",
@@ -664,22 +563,21 @@ def write_reports(project_root: Path, report: Dict[str, Any]) -> None:
         validation = target.get("validation", {})
         txt.append(
             f"{target.get('target')}: passed={target.get('passed')} "
+            f"shape={target.get('annotation_shape')} "
             f"additional_refs={validation.get('additional_references')} "
             f"obsolete_files={validation.get('obsolete_extra_files_present')}"
         )
-    txt_path.write_text("\n".join(txt) + "\n", encoding="utf-8")
+    (report_dir / "v43c_restore_v43_distance_channel_summary.txt").write_text("\n".join(txt) + "\n", encoding="utf-8")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Finalize V43C three-channel ABBA display layout.")
+    ap = argparse.ArgumentParser(description="Finalize V43C three-channel ABBA display layout with restored 0.2.4 orientation.")
     ap.add_argument("--root", default=None, help="Project root. Default: current directory.")
     ap.add_argument("--target", action="append", choices=["all", "provisional", "official", "installed", "cache"], default=None)
     ap.add_argument("--apply", action="store_true", help="Write changes. Without this, dry-run only.")
     ap.add_argument("--validate-only", action="store_true", help="Only validate current layout.")
     ap.add_argument("--strict", action="store_true", help="Return nonzero if validation fails.")
-    ap.add_argument("--slice-axis", type=int, default=0, choices=[0, 1, 2], help="Coronal stack axis. Default 0.")
     ap.add_argument("--sigma", type=float, default=0.75, help="Soft-region-fill sigma.")
-    ap.add_argument("--max-distance", type=float, default=16.0, help="Max distance for Ch2 distance helper.")
     args = ap.parse_args(argv)
 
     project_root = Path(args.root).resolve() if args.root else Path.cwd().resolve()
@@ -689,7 +587,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     dirs: List[Tuple[str, Path]] = []
     for target in targets:
-        dirs.extend(target_dirs(project_root, target))
+        dirs.extend(atlas_dirs(project_root, target))
 
     seen = set()
     unique_dirs: List[Tuple[str, Path]] = []
@@ -706,8 +604,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             atlas_dir=path,
             run_stamp=run_stamp,
             sigma=args.sigma,
-            slice_axis=args.slice_axis,
-            max_distance=args.max_distance,
             dry_run=dry_run,
             validate_only=args.validate_only,
         )
@@ -718,24 +614,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     passed = bool(existing) and all(bool(r.get("passed")) for r in existing)
 
     report = {
-        "version": "V43C final three-channel ABBA layout",
+        "version": "V43C final three-channel ABBA layout, 0.2.4 orientation restored",
         "generated_at": now(),
         "project_root": str(project_root),
         "dry_run": dry_run,
         "validate_only": bool(args.validate_only),
-        "slice_axis": int(args.slice_axis),
         "sigma": float(args.sigma),
-        "max_distance": float(args.max_distance),
         "targets": results,
         "passed": passed,
-        "final_abba_working_layout": {
-            "reference_Ch0": "ON; 0.2.4-style 2D label-outline proxy",
-            "soft_region_fill_reference_Ch1": "optional",
-            "distance_to_2d_outline_reference_Ch2": "optional; V43-style restored",
-            "native_borders_Ch3": "OFF / not used",
-        },
     }
-
     write_reports(project_root, report)
 
     print("V43C Final Three-Channel ABBA Layout")
@@ -748,6 +635,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         validation = r.get("validation", {})
         print(
             f"- {r.get('target')}: exists={r.get('exists')} passed={r.get('passed')} "
+            f"shape={r.get('annotation_shape')} "
             f"additional_refs={validation.get('additional_references')} "
             f"obsolete_files={validation.get('obsolete_extra_files_present')}"
         )
