@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+import nibabel as nib
 import numpy as np
 import tifffile
 from scipy import ndimage
@@ -137,13 +138,28 @@ def load_oriented_source() -> np.ndarray:
 
 
 
+def all_atlas_candidates() -> list[Path]:
+    candidates = list(ATLAS_CANDIDATES)
+    bg_root = Path.home() / ".brainglobe"
+    if bg_root.exists():
+        candidates.extend(sorted(p for p in bg_root.glob("*paxinos*") if p.is_dir()))
+    unique = []
+    seen = set()
+    for path in candidates:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key not in seen:
+            unique.append(path)
+            seen.add(key)
+    return unique
+
+
 def find_annotation_path(required: bool = True) -> Path | None:
-    for atlas_dir in ATLAS_CANDIDATES:
+    for atlas_dir in all_atlas_candidates():
         path = atlas_dir / "annotation.tiff"
         if path.exists():
             return path
     if required:
-        searched = "\n  - ".join(str(p / "annotation.tiff") for p in ATLAS_CANDIDATES)
+        searched = "\n  - ".join(str(p / "annotation.tiff") for p in all_atlas_candidates())
         raise FileNotFoundError(
             "Could not find Paxinos annotation.tiff for automated label-guided registration. "
             "Run the normal atlas builder locally first, or install the atlas in the BrainGlobe cache. "
@@ -501,16 +517,33 @@ def accept(kind: str) -> int:
     return 0
 
 
-def install_one_ch03_target(atlas_dir: Path, index: int) -> dict:
+def write_ch03_nifti(active: np.ndarray, atlas_dir: Path, target_name: str) -> Path:
+    annotation_nii = atlas_dir / "annotation.nii.gz"
+    if annotation_nii.exists():
+        ann_img = nib.load(str(annotation_nii))
+        affine = ann_img.affine
+        header = ann_img.header.copy()
+    else:
+        affine = np.diag([0.04, 0.04, 0.04, 1.0])
+        header = None
+    out = atlas_dir / f"{target_name}.nii.gz"
+    img = nib.Nifti1Image(active.astype(np.uint16, copy=False), affine=affine, header=header)
+    nib.save(img, str(out))
+    return out
+
+
+def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> dict:
     metadata_path = atlas_dir / "metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"metadata.json is missing in atlas dir: {atlas_dir}")
     target_name = "waxholm_anatomy_reference"
     target_tiff = atlas_dir / f"{target_name}.tiff"
+    target_nii = atlas_dir / f"{target_name}.nii.gz"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     backup = REPORT_DIR / f"metadata_before_ch03_install_{index}.json"
     shutil.copy2(metadata_path, backup)
     shutil.copy2(ACTIVE_PATH, target_tiff)
+    target_nii = write_ch03_nifti(active, atlas_dir, target_name)
     refs = metadata.get("additional_references", [])
     if isinstance(refs, str):
         refs = [refs]
@@ -521,12 +554,14 @@ def install_one_ch03_target(atlas_dir: Path, index: int) -> dict:
     metadata["additional_references"] = refs
     files = metadata.get("files") if isinstance(metadata.get("files"), dict) else {}
     files[f"{target_name}_tiff"] = f"{target_name}.tiff"
+    files[f"{target_name}_nifti"] = f"{target_name}.nii.gz"
     metadata["files"] = files
     metadata["v53_optional_ch03"] = {
         "installed": True,
         "reference_name": target_name,
         "source_active_asset": rel(ACTIVE_PATH),
         "installed_tiff": str(target_tiff),
+        "installed_nifti": str(target_nii),
         "metadata_backup": rel(backup),
         "note": "Optional experimental Ch03 WHS/Nissl reference installed by explicit ch03-install command.",
     }
@@ -534,6 +569,7 @@ def install_one_ch03_target(atlas_dir: Path, index: int) -> dict:
     return {
         "atlas_dir": str(atlas_dir),
         "installed_tiff": str(target_tiff),
+        "installed_nifti": str(target_nii),
         "metadata_json": str(metadata_path),
         "metadata_backup": rel(backup),
         "additional_references": refs,
@@ -548,15 +584,16 @@ def install_ch03() -> int:
         raise ValueError(f"Active Ch03 asset has shape {active.shape}; expected {TARGET_SHAPE}: {rel(ACTIVE_PATH)}")
     ensure_dirs()
     targets = []
-    for atlas_dir in ATLAS_CANDIDATES:
+    for atlas_dir in all_atlas_candidates():
         if (atlas_dir / "annotation.tiff").exists() and (atlas_dir / "metadata.json").exists():
             targets.append(atlas_dir)
     if not targets:
         raise FileNotFoundError("No installable Paxinos atlas directory found with annotation.tiff and metadata.json.")
-    installs = [install_one_ch03_target(atlas_dir, index) for index, atlas_dir in enumerate(targets, start=1)]
+    installs = [install_one_ch03_target(atlas_dir, index, active) for index, atlas_dir in enumerate(targets, start=1)]
     write_json({"ch03_install": {"installed_targets": installs, "target_count": len(installs)}})
     for item in installs:
-        print(f"Installed Ch03 reference into atlas: {item['installed_tiff']}")
+        print(f"Installed Ch03 TIFF into atlas: {item['installed_tiff']}")
+        print(f"Installed Ch03 NIfTI into atlas: {item['installed_nifti']}")
     print("Updated metadata additional_references with: waxholm_anatomy_reference")
     print("Restart ABBA or reload/reinstall the atlas if the channel is not visible immediately.")
     return 0
