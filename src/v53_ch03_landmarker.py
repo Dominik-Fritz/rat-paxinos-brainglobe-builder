@@ -501,22 +501,14 @@ def accept(kind: str) -> int:
     return 0
 
 
-def install_ch03() -> int:
-    if not ACTIVE_PATH.exists():
-        raise FileNotFoundError(f"Active Ch03 asset is missing: {rel(ACTIVE_PATH)}. Run landmarks-accept affine/warp first.")
-    annotation_path = find_annotation_path(required=True)
-    atlas_dir = annotation_path.parent
+def install_one_ch03_target(atlas_dir: Path, index: int) -> dict:
     metadata_path = atlas_dir / "metadata.json"
     if not metadata_path.exists():
-        raise FileNotFoundError(f"Cannot install Ch03 because metadata.json is missing in atlas dir: {metadata_path}")
-    active = tifffile.imread(ACTIVE_PATH)
-    if tuple(active.shape) != TARGET_SHAPE:
-        raise ValueError(f"Active Ch03 asset has shape {active.shape}; expected {TARGET_SHAPE}: {rel(ACTIVE_PATH)}")
+        raise FileNotFoundError(f"metadata.json is missing in atlas dir: {atlas_dir}")
     target_name = "waxholm_anatomy_reference"
     target_tiff = atlas_dir / f"{target_name}.tiff"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    backup = REPORT_DIR / "metadata_before_ch03_install.json"
-    ensure_dirs()
+    backup = REPORT_DIR / f"metadata_before_ch03_install_{index}.json"
     shutil.copy2(metadata_path, backup)
     shutil.copy2(ACTIVE_PATH, target_tiff)
     refs = metadata.get("additional_references", [])
@@ -539,9 +531,33 @@ def install_ch03() -> int:
         "note": "Optional experimental Ch03 WHS/Nissl reference installed by explicit ch03-install command.",
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-    write_json({"ch03_install": {"atlas_dir": str(atlas_dir), "installed_tiff": str(target_tiff), "metadata_json": str(metadata_path), "metadata_backup": rel(backup), "additional_references": refs}})
-    print(f"Installed Ch03 reference into atlas: {target_tiff}")
-    print(f"Updated metadata additional_references with: {target_name}")
+    return {
+        "atlas_dir": str(atlas_dir),
+        "installed_tiff": str(target_tiff),
+        "metadata_json": str(metadata_path),
+        "metadata_backup": rel(backup),
+        "additional_references": refs,
+    }
+
+
+def install_ch03() -> int:
+    if not ACTIVE_PATH.exists():
+        raise FileNotFoundError(f"Active Ch03 asset is missing: {rel(ACTIVE_PATH)}. Run landmarks-accept affine/warp first.")
+    active = tifffile.imread(ACTIVE_PATH)
+    if tuple(active.shape) != TARGET_SHAPE:
+        raise ValueError(f"Active Ch03 asset has shape {active.shape}; expected {TARGET_SHAPE}: {rel(ACTIVE_PATH)}")
+    ensure_dirs()
+    targets = []
+    for atlas_dir in ATLAS_CANDIDATES:
+        if (atlas_dir / "annotation.tiff").exists() and (atlas_dir / "metadata.json").exists():
+            targets.append(atlas_dir)
+    if not targets:
+        raise FileNotFoundError("No installable Paxinos atlas directory found with annotation.tiff and metadata.json.")
+    installs = [install_one_ch03_target(atlas_dir, index) for index, atlas_dir in enumerate(targets, start=1)]
+    write_json({"ch03_install": {"installed_targets": installs, "target_count": len(installs)}})
+    for item in installs:
+        print(f"Installed Ch03 reference into atlas: {item['installed_tiff']}")
+    print("Updated metadata additional_references with: waxholm_anatomy_reference")
     print("Restart ABBA or reload/reinstall the atlas if the channel is not visible immediately.")
     return 0
 
