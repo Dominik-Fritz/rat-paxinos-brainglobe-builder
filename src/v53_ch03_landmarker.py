@@ -501,6 +501,51 @@ def accept(kind: str) -> int:
     return 0
 
 
+def install_ch03() -> int:
+    if not ACTIVE_PATH.exists():
+        raise FileNotFoundError(f"Active Ch03 asset is missing: {rel(ACTIVE_PATH)}. Run landmarks-accept affine/warp first.")
+    annotation_path = find_annotation_path(required=True)
+    atlas_dir = annotation_path.parent
+    metadata_path = atlas_dir / "metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Cannot install Ch03 because metadata.json is missing in atlas dir: {metadata_path}")
+    active = tifffile.imread(ACTIVE_PATH)
+    if tuple(active.shape) != TARGET_SHAPE:
+        raise ValueError(f"Active Ch03 asset has shape {active.shape}; expected {TARGET_SHAPE}: {rel(ACTIVE_PATH)}")
+    target_name = "waxholm_anatomy_reference"
+    target_tiff = atlas_dir / f"{target_name}.tiff"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    backup = REPORT_DIR / "metadata_before_ch03_install.json"
+    ensure_dirs()
+    shutil.copy2(metadata_path, backup)
+    shutil.copy2(ACTIVE_PATH, target_tiff)
+    refs = metadata.get("additional_references", [])
+    if isinstance(refs, str):
+        refs = [refs]
+    if not isinstance(refs, list):
+        refs = []
+    if target_name not in refs:
+        refs.append(target_name)
+    metadata["additional_references"] = refs
+    files = metadata.get("files") if isinstance(metadata.get("files"), dict) else {}
+    files[f"{target_name}_tiff"] = f"{target_name}.tiff"
+    metadata["files"] = files
+    metadata["v53_optional_ch03"] = {
+        "installed": True,
+        "reference_name": target_name,
+        "source_active_asset": rel(ACTIVE_PATH),
+        "installed_tiff": str(target_tiff),
+        "metadata_backup": rel(backup),
+        "note": "Optional experimental Ch03 WHS/Nissl reference installed by explicit ch03-install command.",
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_json({"ch03_install": {"atlas_dir": str(atlas_dir), "installed_tiff": str(target_tiff), "metadata_json": str(metadata_path), "metadata_backup": rel(backup), "additional_references": refs}})
+    print(f"Installed Ch03 reference into atlas: {target_tiff}")
+    print(f"Updated metadata additional_references with: {target_name}")
+    print("Restart ABBA or reload/reinstall the atlas if the channel is not visible immediately.")
+    return 0
+
+
 def reset() -> int:
     for path in [AFFINE_PATH, WARP_PATH, REPORT_JSON]:
         if path.exists():
@@ -515,12 +560,12 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     acc = sub.add_parser("landmarks-accept"); acc.add_argument("kind", choices=["affine", "warp"])
     args = parser.parse_args(argv)
     try:
-        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
+        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 1
