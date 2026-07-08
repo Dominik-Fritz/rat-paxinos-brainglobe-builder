@@ -353,25 +353,34 @@ def run_auto_warp() -> int:
     moving_mask = moving_brain_mask(base)
     fixed_small = downsample_mask(fixed_mask, factor=16)
     moving_small = downsample_mask(moving_mask, factor=16)
+    source_ap_small = ap_cdf_mapping(fixed_small, moving_small)
     fixed_com = np.asarray([center_of_mass(fixed_small[i]) if fixed_small[i].any() else (np.nan, np.nan) for i in range(fixed_small.shape[0])])
     moving_com = np.asarray([center_of_mass(moving_small[i]) if moving_small[i].any() else (np.nan, np.nan) for i in range(moving_small.shape[0])])
-    valid = np.isfinite(fixed_com[:, 0]) & np.isfinite(moving_com[:, 0])
-    if valid.sum() < 8:
-        raise ValueError(f"Automated warp needs at least 8 overlapping AP slices with label and Nissl masks; found {int(valid.sum())}.")
+    moving_valid = np.isfinite(moving_com[:, 0])
+    fixed_valid = np.isfinite(fixed_com[:, 0])
+    if fixed_valid.sum() < 8 or moving_valid.sum() < 8:
+        raise ValueError(f"Automated warp needs at least 8 AP slices with label and Nissl masks; fixed={int(fixed_valid.sum())}, moving={int(moving_valid.sum())}.")
+    moving_idx = np.flatnonzero(moving_valid)
+    mapped_moving_com = np.column_stack([
+        np.interp(source_ap_small, moving_idx, moving_com[moving_valid, axis])
+        for axis in range(2)
+    ])
     delta_small = np.zeros((fixed_small.shape[0], 2), dtype=np.float32)
-    delta_small[valid] = fixed_com[valid] - moving_com[valid]
+    delta_small[fixed_valid] = fixed_com[fixed_valid] - mapped_moving_com[fixed_valid]
     for axis in range(2):
-        delta_small[:, axis] = np.interp(np.arange(len(delta_small)), np.flatnonzero(valid), delta_small[valid, axis])
+        delta_small[:, axis] = np.interp(np.arange(len(delta_small)), np.flatnonzero(fixed_valid), delta_small[fixed_valid, axis])
         delta_small[:, axis] = ndimage.gaussian_filter1d(delta_small[:, axis], sigma=2.0)
     ap_scale = TARGET_SHAPE[0] / fixed_small.shape[0]
     si_scale = TARGET_SHAPE[1] / fixed_small.shape[1]
     lr_scale = TARGET_SHAPE[2] / fixed_small.shape[2]
-    delta = np.column_stack([np.zeros(TARGET_SHAPE[0]), np.interp(np.arange(TARGET_SHAPE[0]) / ap_scale, np.arange(fixed_small.shape[0]), delta_small[:, 0]) * si_scale, np.interp(np.arange(TARGET_SHAPE[0]) / ap_scale, np.arange(fixed_small.shape[0]), delta_small[:, 1]) * lr_scale])
-    warped = map_auto_warp_chunked(base, delta)
+    full_ap_index = np.arange(TARGET_SHAPE[0]) / ap_scale
+    source_ap = np.interp(full_ap_index, np.arange(fixed_small.shape[0]), source_ap_small) * ap_scale
+    delta = np.column_stack([np.zeros(TARGET_SHAPE[0]), np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 0]) * si_scale, np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 1]) * lr_scale])
+    warped = map_auto_warp_chunked(base, delta, source_ap=source_ap)
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_warp")
-    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_slice_centerline_mask_warp", "valid_ap_slices": int(valid.sum())}})
+    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_cdf_and_slice_centerline_mask_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
     return 0
 
 def parse_bool(value: str) -> bool:
@@ -455,17 +464,34 @@ def qc_overlay_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, pre
         plt.close(fig)
 
 
-def map_auto_warp_chunked(base: np.ndarray, delta: np.ndarray, chunk: int = 32) -> np.ndarray:
+def map_auto_warp_chunked(base: np.ndarray, delta: np.ndarray, source_ap: np.ndarray | None = None, chunk: int = 32) -> np.ndarray:
     out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
     si = np.arange(TARGET_SHAPE[1])
     lr = np.arange(TARGET_SHAPE[2])
+    if source_ap is None:
+        source_ap = np.arange(TARGET_SHAPE[0], dtype=np.float32)
     for start in range(0, TARGET_SHAPE[0], chunk):
         stop = min(start + chunk, TARGET_SHAPE[0])
-        ap = np.arange(start, stop)
+        ap = source_ap[start:stop]
         coords = np.meshgrid(ap, si, lr, indexing="ij")
         sample = [coords[0], coords[1] - delta[start:stop, 1, None, None], coords[2] - delta[start:stop, 2, None, None]]
         out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
     return out
+
+
+def ap_profile_cdf(mask: np.ndarray) -> np.ndarray:
+    profile = mask.sum(axis=(1, 2)).astype(np.float64)
+    profile = ndimage.gaussian_filter1d(profile, sigma=1.0)
+    profile = np.maximum(profile, 0) + 1e-6
+    cdf = np.cumsum(profile)
+    return cdf / cdf[-1]
+
+
+def ap_cdf_mapping(fixed_small: np.ndarray, moving_small: np.ndarray) -> np.ndarray:
+    fixed_cdf = ap_profile_cdf(fixed_small)
+    moving_cdf = ap_profile_cdf(moving_small)
+    moving_index = np.arange(len(moving_cdf), dtype=np.float32)
+    return np.interp(fixed_cdf, moving_cdf, moving_index).astype(np.float32)
 
 
 def map_displacement_chunked(base: np.ndarray, disp: np.ndarray, chunk: int = 32) -> np.ndarray:
