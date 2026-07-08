@@ -281,7 +281,7 @@ def automatic_affine_matrix(moving_volume: np.ndarray, fixed_mask: np.ndarray) -
     m_min, m_max = bbox(moving_mask)
     f_size = np.maximum(f_max - f_min, 1.0)
     m_size = np.maximum(m_max - m_min, 1.0)
-    scale = np.clip(f_size / m_size, 0.75, 1.35)
+    scale = np.clip(f_size / m_size, 0.60, 1.70)
     f_com = center_of_mass(fixed_mask)
     m_com = center_of_mass(moving_mask)
     mat = np.eye(4)
@@ -353,7 +353,7 @@ def run_auto_warp() -> int:
     moving_mask = moving_brain_mask(base)
     fixed_small = downsample_mask(fixed_mask, factor=16)
     moving_small = downsample_mask(moving_mask, factor=16)
-    source_ap_small = ap_cdf_mapping(fixed_small, moving_small)
+    source_ap_small = ap_dtw_mapping(fixed_small, moving_small)
     fixed_com = np.asarray([center_of_mass(fixed_small[i]) if fixed_small[i].any() else (np.nan, np.nan) for i in range(fixed_small.shape[0])])
     moving_com = np.asarray([center_of_mass(moving_small[i]) if moving_small[i].any() else (np.nan, np.nan) for i in range(moving_small.shape[0])])
     moving_valid = np.isfinite(moving_com[:, 0])
@@ -380,7 +380,7 @@ def run_auto_warp() -> int:
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_warp")
-    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_cdf_and_slice_centerline_mask_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
+    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_profile_and_slice_centerline_mask_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
     return 0
 
 def parse_bool(value: str) -> bool:
@@ -477,6 +477,58 @@ def map_auto_warp_chunked(base: np.ndarray, delta: np.ndarray, source_ap: np.nda
         sample = [coords[0], coords[1] - delta[start:stop, 1, None, None], coords[2] - delta[start:stop, 2, None, None]]
         out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
     return out
+
+
+def ap_profile(mask: np.ndarray) -> np.ndarray:
+    profile = mask.sum(axis=(1, 2)).astype(np.float64)
+    profile = ndimage.gaussian_filter1d(profile, sigma=1.0)
+    if profile.max() > profile.min():
+        profile = (profile - profile.min()) / (profile.max() - profile.min())
+    return profile
+
+
+def ap_dtw_mapping(fixed_small: np.ndarray, moving_small: np.ndarray) -> np.ndarray:
+    fixed = ap_profile(fixed_small)
+    moving = ap_profile(moving_small)
+    n, m = len(fixed), len(moving)
+    cost = (fixed[:, None] - moving[None, :]) ** 2
+    dp = np.full((n, m), np.inf)
+    prev = np.zeros((n, m, 2), dtype=np.int16) - 1
+    dp[0, 0] = cost[0, 0]
+    for i in range(n):
+        for j in range(m):
+            if i == 0 and j == 0:
+                continue
+            options = []
+            if i > 0 and j > 0:
+                options.append((dp[i - 1, j - 1], i - 1, j - 1))
+            if i > 0:
+                options.append((dp[i - 1, j] + 0.05, i - 1, j))
+            if j > 0:
+                options.append((dp[i, j - 1] + 0.05, i, j - 1))
+            best = min(options, key=lambda x: x[0])
+            dp[i, j] = cost[i, j] + best[0]
+            prev[i, j] = (best[1], best[2])
+    pairs = []
+    i, j = n - 1, m - 1
+    while i >= 0 and j >= 0:
+        pairs.append((i, j))
+        pi, pj = prev[i, j]
+        if pi < 0 or pj < 0:
+            break
+        i, j = int(pi), int(pj)
+    by_fixed = {i: [] for i in range(n)}
+    for i, j in pairs:
+        by_fixed[i].append(j)
+    mapping = np.zeros(n, dtype=np.float32)
+    known_i = []
+    known_j = []
+    for i in range(n):
+        if by_fixed[i]:
+            known_i.append(i)
+            known_j.append(float(np.mean(by_fixed[i])))
+    mapping[:] = np.interp(np.arange(n), known_i, known_j)
+    return np.maximum.accumulate(mapping).astype(np.float32)
 
 
 def ap_profile_cdf(mask: np.ndarray) -> np.ndarray:
