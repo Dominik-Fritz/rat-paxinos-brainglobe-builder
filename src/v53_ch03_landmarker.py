@@ -487,9 +487,24 @@ def ap_profile(mask: np.ndarray) -> np.ndarray:
     return profile
 
 
+def ap_extent_from_profile(profile: np.ndarray, fraction: float = 0.02) -> tuple[int, int]:
+    if profile.max() <= 0:
+        raise ValueError("Cannot determine AP extent from an empty profile.")
+    active = np.flatnonzero(profile >= profile.max() * fraction)
+    if active.size == 0:
+        active = np.flatnonzero(profile > 0)
+    if active.size == 0:
+        raise ValueError("Cannot determine AP extent from an empty AP profile.")
+    return int(active[0]), int(active[-1])
+
+
 def ap_dtw_mapping(fixed_small: np.ndarray, moving_small: np.ndarray) -> np.ndarray:
-    fixed = ap_profile(fixed_small)
-    moving = ap_profile(moving_small)
+    fixed_full = ap_profile(fixed_small)
+    moving_full = ap_profile(moving_small)
+    fixed_start, fixed_end = ap_extent_from_profile(fixed_full)
+    moving_start, moving_end = ap_extent_from_profile(moving_full)
+    fixed = fixed_full[fixed_start:fixed_end + 1]
+    moving = moving_full[moving_start:moving_end + 1]
     n, m = len(fixed), len(moving)
     cost = (fixed[:, None] - moving[None, :]) ** 2
     dp = np.full((n, m), np.inf)
@@ -512,22 +527,24 @@ def ap_dtw_mapping(fixed_small: np.ndarray, moving_small: np.ndarray) -> np.ndar
     pairs = []
     i, j = n - 1, m - 1
     while i >= 0 and j >= 0:
-        pairs.append((i, j))
+        pairs.append((i + fixed_start, j + moving_start))
         pi, pj = prev[i, j]
         if pi < 0 or pj < 0:
             break
         i, j = int(pi), int(pj)
-    by_fixed = {i: [] for i in range(n)}
+    by_fixed = {i: [] for i in range(len(fixed_full))}
     for i, j in pairs:
         by_fixed[i].append(j)
-    mapping = np.zeros(n, dtype=np.float32)
-    known_i = []
-    known_j = []
-    for i in range(n):
+    known_i = [fixed_start, fixed_end]
+    known_j = [float(moving_start), float(moving_end)]
+    for i in range(len(fixed_full)):
         if by_fixed[i]:
             known_i.append(i)
             known_j.append(float(np.mean(by_fixed[i])))
-    mapping[:] = np.interp(np.arange(n), known_i, known_j)
+    order = np.argsort(known_i)
+    known_i = np.asarray(known_i)[order]
+    known_j = np.asarray(known_j)[order]
+    mapping = np.interp(np.arange(len(fixed_full)), known_i, known_j)
     return np.maximum.accumulate(mapping).astype(np.float32)
 
 
