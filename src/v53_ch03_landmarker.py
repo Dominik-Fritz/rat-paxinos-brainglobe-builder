@@ -22,7 +22,7 @@ import tifffile
 from scipy import ndimage
 from scipy.interpolate import RBFInterpolator
 from skimage import exposure, filters, transform
-from skimage.registration import phase_cross_correlation
+from skimage.registration import optical_flow_tvl1, phase_cross_correlation
 
 import matplotlib
 matplotlib.use("Agg")
@@ -574,6 +574,78 @@ def apply_slice_offsets_chunked(base: np.ndarray, offsets: np.ndarray, chunk: in
         out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
     return out
 
+
+def local_edge_flow_from_labels(fixed_labels: np.ndarray, moving_vol: np.ndarray, factor: int = 8) -> tuple[np.ndarray, dict]:
+    small_shape = tuple(max(8, s // factor) for s in TARGET_SHAPE)
+    zoom = np.asarray(small_shape) / np.asarray(TARGET_SHAPE)
+    labels_small = ndimage.zoom(fixed_labels, zoom, order=0)
+    moving_small = ndimage.zoom(moving_vol.astype(np.float32, copy=False), zoom, order=1)
+    flow = np.zeros((small_shape[0], 2, small_shape[1], small_shape[2]), dtype=np.float32)
+    valid = np.zeros(small_shape[0], dtype=bool)
+    for ap in range(small_shape[0]):
+        fixed_edge = label_boundary_2d(labels_small[ap]).astype(np.float32)
+        moving_slice = exposure.rescale_intensity(moving_small[ap], out_range=(0, 1)).astype(np.float32)
+        if fixed_edge.sum() < 48 or np.count_nonzero(moving_slice) < 48:
+            continue
+        moving_edge = filters.sobel(moving_slice).astype(np.float32)
+        if float(moving_edge.max()) <= 0:
+            continue
+        fixed_edge = ndimage.gaussian_filter(fixed_edge, sigma=0.8)
+        moving_edge = ndimage.gaussian_filter(moving_edge / max(float(moving_edge.max()), 1e-6), sigma=0.8)
+        try:
+            v, u = optical_flow_tvl1(fixed_edge, moving_edge, attachment=20, tightness=0.3, num_warp=3, num_iter=10)
+        except Exception:
+            continue
+        flow[ap, 0] = np.clip(v, -0.75, 0.75)
+        flow[ap, 1] = np.clip(u, -0.75, 0.75)
+        valid[ap] = True
+    for axis in range(2):
+        flow[:, axis] = ndimage.gaussian_filter(flow[:, axis], sigma=(1.0, 1.0, 1.0))
+    metrics = {
+        "micro_warp_factor": factor,
+        "micro_warp_valid_slices": int(valid.sum()),
+        "micro_warp_flow_si_lr_min": [float(flow[:, 0].min() * factor), float(flow[:, 1].min() * factor)],
+        "micro_warp_flow_si_lr_max": [float(flow[:, 0].max() * factor), float(flow[:, 1].max() * factor)],
+        "micro_warp_note": "Conservative optional 2D slice-local edge-flow refinement; full-resolution flow is clipped to about +/-6 voxels before smoothing.",
+    }
+    return flow, metrics
+
+
+def apply_local_flow_chunked(base: np.ndarray, flow_small: np.ndarray, factor: int, chunk: int = 16) -> np.ndarray:
+    out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
+    ap_small = np.arange(flow_small.shape[0])
+    si_small = np.arange(flow_small.shape[2])
+    lr_small = np.arange(flow_small.shape[3])
+    si = np.arange(TARGET_SHAPE[1])
+    lr = np.arange(TARGET_SHAPE[2])
+    for start in range(0, TARGET_SHAPE[0], chunk):
+        stop = min(start + chunk, TARGET_SHAPE[0])
+        ap = np.arange(start, stop)
+        coords = np.meshgrid(ap, si, lr, indexing="ij")
+        q_ap = np.clip(coords[0] / factor, 0, flow_small.shape[0] - 1)
+        q_si = np.clip(coords[1] / factor, 0, flow_small.shape[2] - 1)
+        q_lr = np.clip(coords[2] / factor, 0, flow_small.shape[3] - 1)
+        flow_si = ndimage.map_coordinates(flow_small[:, 0], [q_ap, q_si, q_lr], order=1, mode="nearest") * factor
+        flow_lr = ndimage.map_coordinates(flow_small[:, 1], [q_ap, q_si, q_lr], order=1, mode="nearest") * factor
+        sample = [coords[0], coords[1] + flow_si, coords[2] + flow_lr]
+        out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
+    return out
+
+
+def run_auto_micro_warp() -> int:
+    if not WARP_PATH.exists():
+        raise FileNotFoundError(f"Warp candidate is missing: {rel(WARP_PATH)}. Run auto-warp first.")
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    fixed_labels, _ = orient_fixed_labels(tifffile.imread(annotation_path), annotation_path)
+    base = tifffile.imread(WARP_PATH)
+    flow_small, metrics = local_edge_flow_from_labels(fixed_labels, base, factor=8)
+    refined = apply_local_flow_chunked(base, flow_small, factor=8)
+    write_tiff(WARP_PATH, refined)
+    qc_slices(refined, REPORT_DIR / "qc_warp", "ch03_auto_micro_warp")
+    qc_overlay_slices(refined, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_micro_warp")
+    write_json({"auto_micro_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, **metrics}})
+    return 0
+
 def map_auto_warp_chunked(
     base: np.ndarray,
     delta: np.ndarray,
@@ -859,12 +931,12 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     acc = sub.add_parser("landmarks-accept"); acc.add_argument("kind", choices=["affine", "warp"])
     args = parser.parse_args(argv)
     try:
-        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
+        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "auto-micro-warp": run_auto_micro_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 1
