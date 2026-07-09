@@ -361,26 +361,52 @@ def run_auto_warp() -> int:
     if fixed_valid.sum() < 8 or moving_valid.sum() < 8:
         raise ValueError(f"Automated warp needs at least 8 AP slices with label and Nissl masks; fixed={int(fixed_valid.sum())}, moving={int(moving_valid.sum())}.")
     moving_idx = np.flatnonzero(moving_valid)
+    fixed_idx = np.flatnonzero(fixed_valid)
     mapped_moving_com = np.column_stack([
         np.interp(source_ap_small, moving_idx, moving_com[moving_valid, axis])
         for axis in range(2)
     ])
     delta_small = np.zeros((fixed_small.shape[0], 2), dtype=np.float32)
     delta_small[fixed_valid] = fixed_com[fixed_valid] - mapped_moving_com[fixed_valid]
+    fixed_sizes = slice_bbox_sizes(fixed_small)
+    moving_sizes = slice_bbox_sizes(moving_small)
+    size_valid = fixed_valid & np.all(np.isfinite(fixed_sizes), axis=1)
+    mapped_moving_sizes = np.column_stack([
+        np.interp(source_ap_small, moving_idx, moving_sizes[moving_valid, axis])
+        for axis in range(2)
+    ])
+    scale_small = np.ones((fixed_small.shape[0], 2), dtype=np.float32)
+    scale_valid = size_valid & np.all(mapped_moving_sizes > 1, axis=1)
+    scale_small[scale_valid] = fixed_sizes[scale_valid] / mapped_moving_sizes[scale_valid]
+    fixed_com_filled = np.zeros_like(fixed_com, dtype=np.float32)
     for axis in range(2):
-        delta_small[:, axis] = np.interp(np.arange(len(delta_small)), np.flatnonzero(fixed_valid), delta_small[fixed_valid, axis])
+        fixed_com_filled[:, axis] = np.interp(np.arange(len(fixed_com)), fixed_idx, fixed_com[fixed_valid, axis])
+        delta_small[:, axis] = np.interp(np.arange(len(delta_small)), fixed_idx, delta_small[fixed_valid, axis])
         delta_small[:, axis] = ndimage.gaussian_filter1d(delta_small[:, axis], sigma=2.0)
+        valid_scale_idx = np.flatnonzero(scale_valid)
+        if valid_scale_idx.size >= 2:
+            scale_small[:, axis] = np.interp(np.arange(len(scale_small)), valid_scale_idx, scale_small[scale_valid, axis])
+        scale_small[:, axis] = ndimage.gaussian_filter1d(np.clip(scale_small[:, axis], 0.80, 1.25), sigma=2.0)
     ap_scale = TARGET_SHAPE[0] / fixed_small.shape[0]
     si_scale = TARGET_SHAPE[1] / fixed_small.shape[1]
     lr_scale = TARGET_SHAPE[2] / fixed_small.shape[2]
     full_ap_index = np.arange(TARGET_SHAPE[0]) / ap_scale
     source_ap = np.interp(full_ap_index, np.arange(fixed_small.shape[0]), source_ap_small) * ap_scale
     delta = np.column_stack([np.zeros(TARGET_SHAPE[0]), np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 0]) * si_scale, np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 1]) * lr_scale])
-    warped = map_auto_warp_chunked(base, delta, source_ap=source_ap)
+    fixed_center_full = np.column_stack([
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), fixed_com_filled[:, 0]) * si_scale,
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), fixed_com_filled[:, 1]) * lr_scale,
+    ])
+    moving_center_full = fixed_center_full - delta[:, 1:3]
+    slice_scale_full = np.column_stack([
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), scale_small[:, 0]),
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), scale_small[:, 1]),
+    ])
+    warped = map_auto_warp_chunked(base, delta, source_ap=source_ap, slice_scale=slice_scale_full, fixed_center=fixed_center_full, moving_center=moving_center_full)
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_warp")
-    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_profile_and_slice_centerline_mask_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
+    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_profile_centerline_and_slice_size_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())], "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())], "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
     return 0
 
 def parse_bool(value: str) -> bool:
@@ -464,20 +490,61 @@ def qc_overlay_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, pre
         plt.close(fig)
 
 
-def map_auto_warp_chunked(base: np.ndarray, delta: np.ndarray, source_ap: np.ndarray | None = None, chunk: int = 32) -> np.ndarray:
+def map_auto_warp_chunked(
+    base: np.ndarray,
+    delta: np.ndarray,
+    source_ap: np.ndarray | None = None,
+    slice_scale: np.ndarray | None = None,
+    fixed_center: np.ndarray | None = None,
+    moving_center: np.ndarray | None = None,
+    chunk: int = 32,
+) -> np.ndarray:
     out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
     si = np.arange(TARGET_SHAPE[1])
     lr = np.arange(TARGET_SHAPE[2])
     if source_ap is None:
         source_ap = np.arange(TARGET_SHAPE[0], dtype=np.float32)
+    if slice_scale is None:
+        slice_scale = np.ones((TARGET_SHAPE[0], 2), dtype=np.float32)
+    if fixed_center is None:
+        fixed_center = np.column_stack([
+            np.arange(TARGET_SHAPE[0], dtype=np.float32) * 0 + (TARGET_SHAPE[1] - 1) / 2,
+            np.arange(TARGET_SHAPE[0], dtype=np.float32) * 0 + (TARGET_SHAPE[2] - 1) / 2,
+        ])
+    if moving_center is None:
+        moving_center = fixed_center - delta[:, 1:3]
     for start in range(0, TARGET_SHAPE[0], chunk):
         stop = min(start + chunk, TARGET_SHAPE[0])
         ap = source_ap[start:stop]
         coords = np.meshgrid(ap, si, lr, indexing="ij")
-        sample = [coords[0], coords[1] - delta[start:stop, 1, None, None], coords[2] - delta[start:stop, 2, None, None]]
+        fc = fixed_center[start:stop]
+        mc = moving_center[start:stop]
+        sc = np.clip(slice_scale[start:stop], 0.80, 1.25)
+        sample = [
+            coords[0],
+            mc[:, 0, None, None] + (coords[1] - fc[:, 0, None, None]) / sc[:, 0, None, None],
+            mc[:, 1, None, None] + (coords[2] - fc[:, 1, None, None]) / sc[:, 1, None, None],
+        ]
         out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
     return out
 
+
+
+def slice_bbox_size(mask2d: np.ndarray) -> tuple[float, float] | None:
+    coords = np.argwhere(mask2d)
+    if coords.size == 0:
+        return None
+    span = coords.max(axis=0) - coords.min(axis=0) + 1
+    return float(span[0]), float(span[1])
+
+
+def slice_bbox_sizes(mask: np.ndarray) -> np.ndarray:
+    sizes = np.full((mask.shape[0], 2), np.nan, dtype=np.float32)
+    for ap in range(mask.shape[0]):
+        size = slice_bbox_size(mask[ap])
+        if size is not None:
+            sizes[ap] = size
+    return sizes
 
 def ap_profile(mask: np.ndarray) -> np.ndarray:
     profile = mask.sum(axis=(1, 2)).astype(np.float64)
