@@ -22,6 +22,7 @@ import tifffile
 from scipy import ndimage
 from scipy.interpolate import RBFInterpolator
 from skimage import exposure, filters, transform
+from skimage.registration import phase_cross_correlation
 
 import matplotlib
 matplotlib.use("Agg")
@@ -403,10 +404,13 @@ def run_auto_warp() -> int:
         np.interp(full_ap_index, np.arange(fixed_small.shape[0]), scale_small[:, 1]),
     ])
     warped = map_auto_warp_chunked(base, delta, source_ap=source_ap, slice_scale=slice_scale_full, fixed_center=fixed_center_full, moving_center=moving_center_full)
+    fixed_labels, _ = orient_fixed_labels(tifffile.imread(annotation_path), annotation_path)
+    edge_offsets, edge_metrics = residual_edge_offsets_from_labels(fixed_labels, warped, factor=4)
+    warped = apply_slice_offsets_chunked(warped, edge_offsets)
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_warp")
-    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_profile_centerline_and_slice_size_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())], "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())], "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
+    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_slice_size_and_edge_refine_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())], "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())], **edge_metrics, "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
     return 0
 
 def parse_bool(value: str) -> bool:
@@ -489,6 +493,85 @@ def qc_overlay_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, pre
         fig.savefig(outdir / f"{prefix}_overlay_ap_{ap:03d}.png", dpi=120)
         plt.close(fig)
 
+
+def label_boundary_2d(labels2d: np.ndarray) -> np.ndarray:
+    boundary = np.zeros(labels2d.shape, dtype=bool)
+    boundary[:-1, :] |= labels2d[:-1, :] != labels2d[1:, :]
+    boundary[1:, :] |= labels2d[:-1, :] != labels2d[1:, :]
+    boundary[:, :-1] |= labels2d[:, :-1] != labels2d[:, 1:]
+    boundary[:, 1:] |= labels2d[:, :-1] != labels2d[:, 1:]
+    boundary &= labels2d > 0
+    return ndimage.binary_dilation(boundary, iterations=1)
+
+
+def fill_and_smooth_offsets(offsets: np.ndarray, valid: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    filled = np.zeros_like(offsets, dtype=np.float32)
+    valid_idx = np.flatnonzero(valid)
+    if valid_idx.size < 2:
+        return filled
+    x = np.arange(len(offsets))
+    for axis in range(offsets.shape[1]):
+        filled[:, axis] = np.interp(x, valid_idx, offsets[valid, axis])
+        filled[:, axis] = ndimage.gaussian_filter1d(filled[:, axis], sigma=sigma)
+    return filled
+
+
+def residual_edge_offsets_from_labels(fixed_labels: np.ndarray, moving_vol: np.ndarray, factor: int = 4) -> tuple[np.ndarray, dict]:
+    small_shape = tuple(max(8, s // factor) for s in TARGET_SHAPE)
+    zoom = np.asarray(small_shape) / np.asarray(TARGET_SHAPE)
+    labels_small = ndimage.zoom(fixed_labels, zoom, order=0)
+    moving_small = ndimage.zoom(moving_vol.astype(np.float32, copy=False), zoom, order=1)
+    raw_offsets = np.zeros((small_shape[0], 2), dtype=np.float32)
+    valid = np.zeros(small_shape[0], dtype=bool)
+    errors = []
+    window = np.outer(np.hanning(small_shape[1]), np.hanning(small_shape[2])).astype(np.float32)
+    for ap in range(small_shape[0]):
+        fixed_edge = label_boundary_2d(labels_small[ap]).astype(np.float32)
+        moving_slice = exposure.rescale_intensity(moving_small[ap], out_range=(0, 1)).astype(np.float32)
+        if fixed_edge.sum() < 32 or np.count_nonzero(moving_slice) < 32:
+            continue
+        moving_edge = filters.sobel(moving_slice)
+        if float(moving_edge.max()) <= 0:
+            continue
+        fixed_img = fixed_edge * window
+        moving_img = moving_edge * window
+        try:
+            shift, error, _ = phase_cross_correlation(fixed_img, moving_img, upsample_factor=1, normalization=None)
+        except Exception:
+            continue
+        if not np.all(np.isfinite(shift)):
+            continue
+        raw_offsets[ap] = np.clip(shift[:2], -2.0, 2.0)
+        valid[ap] = True
+        errors.append(float(error))
+    offsets_small = fill_and_smooth_offsets(raw_offsets, valid, sigma=2.0)
+    ap_full = np.arange(TARGET_SHAPE[0]) / factor
+    offsets_full = np.column_stack([
+        np.interp(ap_full, np.arange(small_shape[0]), offsets_small[:, 0]) * factor,
+        np.interp(ap_full, np.arange(small_shape[0]), offsets_small[:, 1]) * factor,
+    ]).astype(np.float32)
+    offsets_full = np.clip(offsets_full, -8.0, 8.0)
+    metrics = {
+        "edge_refine_factor": factor,
+        "edge_refine_valid_slices": int(valid.sum()),
+        "edge_refine_offset_si_lr_min": [float(offsets_full[:, 0].min()), float(offsets_full[:, 1].min())],
+        "edge_refine_offset_si_lr_max": [float(offsets_full[:, 0].max()), float(offsets_full[:, 1].max())],
+        "edge_refine_phase_error_mean": float(np.mean(errors)) if errors else None,
+    }
+    return offsets_full, metrics
+
+
+def apply_slice_offsets_chunked(base: np.ndarray, offsets: np.ndarray, chunk: int = 32) -> np.ndarray:
+    out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
+    si = np.arange(TARGET_SHAPE[1])
+    lr = np.arange(TARGET_SHAPE[2])
+    for start in range(0, TARGET_SHAPE[0], chunk):
+        stop = min(start + chunk, TARGET_SHAPE[0])
+        ap = np.arange(start, stop)
+        coords = np.meshgrid(ap, si, lr, indexing="ij")
+        sample = [coords[0], coords[1] - offsets[start:stop, 0, None, None], coords[2] - offsets[start:stop, 1, None, None]]
+        out[start:stop] = ndimage.map_coordinates(base, sample, order=1, mode="constant", cval=0).astype(np.uint16)
+    return out
 
 def map_auto_warp_chunked(
     base: np.ndarray,
