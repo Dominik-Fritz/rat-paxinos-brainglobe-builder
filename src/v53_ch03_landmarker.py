@@ -352,8 +352,9 @@ def run_auto_warp() -> int:
         run_auto_affine()
         base = tifffile.imread(AFFINE_PATH)
     moving_mask = moving_brain_mask(base)
-    fixed_small = downsample_mask(fixed_mask, factor=16)
-    moving_small = downsample_mask(moving_mask, factor=16)
+    warp_downsample_factor = 8
+    fixed_small = downsample_mask(fixed_mask, factor=warp_downsample_factor)
+    moving_small = downsample_mask(moving_mask, factor=warp_downsample_factor)
     source_ap_small = ap_dtw_mapping(fixed_small, moving_small)
     fixed_com = np.asarray([center_of_mass(fixed_small[i]) if fixed_small[i].any() else (np.nan, np.nan) for i in range(fixed_small.shape[0])])
     moving_com = np.asarray([center_of_mass(moving_small[i]) if moving_small[i].any() else (np.nan, np.nan) for i in range(moving_small.shape[0])])
@@ -410,7 +411,7 @@ def run_auto_warp() -> int:
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_warp")
-    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_ap_dtw_slice_size_and_edge_refine_warp", "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())], "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())], **edge_metrics, "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
+    write_json({"auto_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "affine_plus_fine_ap_dtw_slice_size_and_edge_refine_warp", "warp_downsample_factor": warp_downsample_factor, "fixed_valid_ap_slices": int(fixed_valid.sum()), "moving_valid_ap_slices": int(moving_valid.sum()), "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())], "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())], **edge_metrics, "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())], "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)]}})
     return 0
 
 def parse_bool(value: str) -> bool:
