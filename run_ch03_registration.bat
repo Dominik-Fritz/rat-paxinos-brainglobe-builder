@@ -14,6 +14,8 @@ if /I "%~1"=="landmarks-warp" goto run
 if /I "%~1"=="auto-affine" goto run
 if /I "%~1"=="auto-warp" goto run
 if /I "%~1"=="auto-micro-warp" goto run
+if /I "%~1"=="region-template" goto run
+if /I "%~1"=="region-warp" goto run
 if /I "%~1"=="ch03-install" goto run
 if /I "%~1"=="landmarks-accept" goto run
 if /I "%~1"=="landmarks-reset" goto run
@@ -35,6 +37,8 @@ echo   run_ch03_registration.bat landmarks-warp
 echo   run_ch03_registration.bat auto-affine
 echo   run_ch03_registration.bat auto-warp
 echo   run_ch03_registration.bat auto-micro-warp
+echo   run_ch03_registration.bat region-template
+echo   run_ch03_registration.bat region-warp
 echo   run_ch03_registration.bat ch03-install
 echo   run_ch03_registration.bat landmarks-accept affine
 echo   run_ch03_registration.bat landmarks-accept warp

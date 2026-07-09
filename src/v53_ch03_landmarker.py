@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OPTIONAL_DIR = ROOT / "resources" / "optional_ch03"
 REPORT_DIR = ROOT / "reports" / "v53_ch03_landmarks"
 CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_landmarks.csv"
+REGION_CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_region_corrections.csv"
 SOURCE_PATH = Path(os.environ.get("V53_WHS_NISSL_SOURCE", r"C:\Users\49152\.brainglobe\whs_sd_rat_39um_v1.2\reference.tiff"))
 ACTIVE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference.tiff"
 AFFINE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_affine.tiff"
@@ -50,6 +51,7 @@ PERM = (0, 2, 1)
 PRE_RESIZE_ROT90 = -1
 TARGET_FLIPS = (0,)
 COLUMNS = ["enabled", "name", "fixed_ap", "fixed_si", "fixed_lr", "moving_ap", "moving_si", "moving_lr", "weight", "notes"]
+REGION_COLUMNS = ["enabled", "name", "target_ap", "target_si", "target_lr", "current_ap", "current_si", "current_lr", "radius", "weight", "notes"]
 
 
 @dataclass
@@ -87,6 +89,7 @@ def status(exit_missing_ok: bool = True) -> int:
     rows = {
         "whs_source": SOURCE_PATH,
         "landmark_csv": CSV_PATH,
+        "region_correction_csv": REGION_CSV_PATH,
         "paxinos_annotation": find_annotation_path(required=False) or Path("<not found>"),
         "affine_candidate": AFFINE_PATH,
         "warp_candidate": WARP_PATH,
@@ -120,6 +123,20 @@ def create_template() -> int:
         (REPORT_DIR / "template_status.txt").write_text(msg + "\n", encoding="utf-8")
         print(msg)
     write_json({"template": {"csv": rel(CSV_PATH), "source_exists": SOURCE_PATH.exists()}})
+    return 0
+
+
+def create_region_template() -> int:
+    ensure_dirs()
+    if REGION_CSV_PATH.exists():
+        print(f"Region correction CSV already exists; not overwriting: {rel(REGION_CSV_PATH)}")
+    else:
+        with REGION_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=REGION_COLUMNS)
+            writer.writeheader()
+            writer.writerow({"enabled": "0", "name": "example_region_center", "target_ap": "", "target_si": "", "target_lr": "", "current_ap": "", "current_si": "", "current_lr": "", "radius": "45", "weight": "1", "notes": "Target = Paxinos label point; current = same visible Nissl feature after auto-warp/micro-warp, both in AP,SI,LR."})
+        print(f"Created region correction CSV template: {rel(REGION_CSV_PATH)}")
+    write_json({"region_template": {"csv": rel(REGION_CSV_PATH)}})
     return 0
 
 
@@ -444,6 +461,79 @@ def read_landmarks(min_count: int) -> LandmarkSet:
     if len(fixed) < min_count:
         raise ValueError(f"Need at least {min_count} enabled valid landmarks; found {len(fixed)}.")
     return LandmarkSet(names, np.asarray(fixed), np.asarray(moving), np.asarray(weights))
+
+
+@dataclass
+class RegionCorrectionSet:
+    names: list[str]
+    target: np.ndarray
+    current: np.ndarray
+    radius: np.ndarray
+    weights: np.ndarray
+
+
+def read_region_corrections(min_count: int) -> RegionCorrectionSet:
+    if not REGION_CSV_PATH.exists():
+        raise FileNotFoundError(f"Missing region correction CSV: {rel(REGION_CSV_PATH)}. Run region-template first.")
+    target = []; current = []; names = []; radii = []; weights = []
+    with REGION_CSV_PATH.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames != REGION_COLUMNS:
+            raise ValueError(f"Invalid region CSV columns. Expected exactly: {','.join(REGION_COLUMNS)}")
+        for rownum, row in enumerate(reader, start=2):
+            if not parse_bool(row["enabled"]):
+                continue
+            try:
+                tgt = [float(row[c]) for c in ("target_ap", "target_si", "target_lr")]
+                cur = [float(row[c]) for c in ("current_ap", "current_si", "current_lr")]
+                radius = float(row["radius"] or 45)
+                wt = float(row["weight"] or 1)
+            except ValueError as exc:
+                raise ValueError(f"Invalid numeric value in enabled region row {rownum}: {exc}") from exc
+            for label, coords in (("target", tgt), ("current", cur)):
+                if not (0 <= coords[0] <= 607 and 0 <= coords[1] <= 285 and 0 <= coords[2] <= 408):
+                    raise ValueError(f"{label} coordinates out of AP/SI/LR range on row {rownum}: {coords}")
+            if radius <= 0 or wt <= 0:
+                raise ValueError(f"Region radius and weight must be positive on row {rownum}")
+            names.append(row["name"] or f"row_{rownum}"); target.append(tgt); current.append(cur); radii.append(radius); weights.append(wt)
+    if len(target) < min_count:
+        raise ValueError(f"Need at least {min_count} enabled valid region corrections; found {len(target)}.")
+    return RegionCorrectionSet(names, np.asarray(target, dtype=np.float32), np.asarray(current, dtype=np.float32), np.asarray(radii, dtype=np.float32), np.asarray(weights, dtype=np.float32))
+
+
+def local_region_displacement(lm: RegionCorrectionSet, grid_shape: tuple[int, int, int]) -> np.ndarray:
+    axes = [np.linspace(0, s - 1, n, dtype=np.float32) for s, n in zip(TARGET_SHAPE, grid_shape)]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    disp_grid = np.zeros((*grid_shape, 3), dtype=np.float32)
+    weight_grid = np.zeros(grid_shape, dtype=np.float32)
+    landmark_disp = lm.target - lm.current
+    for point, disp, radius, weight in zip(lm.target, landmark_disp, lm.radius, lm.weights):
+        d2 = sum((mesh[axis] - point[axis]) ** 2 for axis in range(3))
+        influence = np.exp(-0.5 * d2 / max(radius, 1.0) ** 2).astype(np.float32) * float(weight)
+        weight_grid += influence
+        for axis in range(3):
+            disp_grid[..., axis] += influence * float(disp[axis])
+    valid = weight_grid > 1e-6
+    disp_grid[valid] /= weight_grid[valid, None]
+    disp_grid *= np.clip(weight_grid[..., None], 0.0, 1.0)
+    return disp_grid
+
+
+def run_region_warp() -> int:
+    lm = read_region_corrections(1)
+    if not WARP_PATH.exists():
+        raise FileNotFoundError(f"Warp candidate is missing: {rel(WARP_PATH)}. Run auto-warp first.")
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    base = tifffile.imread(WARP_PATH)
+    grid_shape = tuple(max(12, s // 12) for s in TARGET_SHAPE)
+    disp_small = local_region_displacement(lm, grid_shape)
+    disp = np.stack([ndimage.zoom(disp_small[..., i], np.array(TARGET_SHAPE) / np.array(grid_shape), order=1) for i in range(3)]).astype(np.float32)
+    warped = map_displacement_chunked(base, disp)
+    write_tiff(WARP_PATH, warped)
+    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_region_warp")
+    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_region_warp")
+    write_json({"region_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "region_count": len(lm.names), "method": "manual_local_gaussian_region_correction", "grid_shape": grid_shape, "max_requested_shift_voxels": float(np.linalg.norm(lm.target - lm.current, axis=1).max()), "radius_min_max": [float(lm.radius.min()), float(lm.radius.max())]}})
+    return 0
 
 
 def affine_matrix(lm: LandmarkSet) -> np.ndarray:
@@ -931,12 +1021,12 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     acc = sub.add_parser("landmarks-accept"); acc.add_argument("kind", choices=["affine", "warp"])
     args = parser.parse_args(argv)
     try:
-        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "auto-micro-warp": run_auto_micro_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
+        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "auto-micro-warp": run_auto_micro_warp, "region-template": create_region_template, "region-warp": run_region_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 1

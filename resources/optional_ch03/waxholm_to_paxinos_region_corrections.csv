@@ -1,0 +1,2 @@
+enabled,name,target_ap,target_si,target_lr,current_ap,current_si,current_lr,radius,weight,notes
+0,example_region_center,,,,,,,45,1,"Target=Paxinos label point; current=same visible Nissl feature after auto-warp/micro-warp, both AP/SI/LR. Enable with 1."
