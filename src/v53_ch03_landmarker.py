@@ -536,6 +536,99 @@ def run_region_warp() -> int:
     return 0
 
 
+
+def qc_coordinate_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, prefix: str = "ch03_region_pick") -> None:
+    """Write coordinate-labelled overlays for choosing region correction points.
+
+    The image axes are LR (horizontal x) and SI (vertical y); AP is encoded in
+    the filename/title. This makes screenshots self-contained enough to discuss
+    target/current coordinates without sharing CSV files.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    aps = np.linspace(40, TARGET_SHAPE[0] - 41, 10, dtype=int)
+    for ap in aps:
+        img = exposure.rescale_intensity(vol[ap], out_range=(0, 1))
+        boundary = fixed_mask[ap] ^ ndimage.binary_erosion(fixed_mask[ap])
+        rgb = np.dstack([img, img, img])
+        rgb[boundary, 0] = 1.0
+        rgb[boundary, 1] = 0.05
+        rgb[boundary, 2] = 0.05
+        fig, ax = plt.subplots(figsize=(9, 7))
+        ax.imshow(rgb, origin="upper")
+        ax.set_title(f"{prefix} AP={ap} | x=LR 0-{TARGET_SHAPE[2]-1}, y=SI 0-{TARGET_SHAPE[1]-1} | red=Paxinos outline")
+        ax.set_xlabel("LR coordinate")
+        ax.set_ylabel("SI coordinate")
+        ax.set_xticks(np.arange(0, TARGET_SHAPE[2], 50))
+        ax.set_yticks(np.arange(0, TARGET_SHAPE[1], 50))
+        ax.grid(color="yellow", alpha=0.35, linewidth=0.6)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{prefix}_overlay_ap_{ap:03d}_coordgrid.png", dpi=140)
+        plt.close(fig)
+
+
+def run_region_qc() -> int:
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    if WARP_PATH.exists():
+        vol = tifffile.imread(WARP_PATH)
+        source = WARP_PATH
+    elif ACTIVE_PATH.exists():
+        vol = tifffile.imread(ACTIVE_PATH)
+        source = ACTIVE_PATH
+    else:
+        raise FileNotFoundError(f"No Ch03 warp/active asset exists. Run auto-warp first; expected {rel(WARP_PATH)} or {rel(ACTIVE_PATH)}.")
+    qc_coordinate_slices(vol, fixed_mask, REPORT_DIR / "qc_region_pick")
+    write_json({"region_qc": {"source": rel(source), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "qc_dir": rel(REPORT_DIR / "qc_region_pick"), "coordinate_convention": "AP in filename/title; image x=LR, image y=SI"}})
+    print(f"Wrote coordinate-pick QC to {rel(REPORT_DIR / 'qc_region_pick')}")
+    return 0
+
+
+def append_region_correction(args: argparse.Namespace) -> int:
+    ensure_dirs()
+    if not REGION_CSV_PATH.exists():
+        create_region_template()
+    row = {
+        "enabled": "1",
+        "name": args.name,
+        "target_ap": str(args.target_ap),
+        "target_si": str(args.target_si),
+        "target_lr": str(args.target_lr),
+        "current_ap": str(args.current_ap),
+        "current_si": str(args.current_si),
+        "current_lr": str(args.current_lr),
+        "radius": str(args.radius),
+        "weight": str(args.weight),
+        "notes": args.notes or "added by region-add",
+    }
+    for label, coords in (("target", [args.target_ap, args.target_si, args.target_lr]), ("current", [args.current_ap, args.current_si, args.current_lr])):
+        if not (0 <= coords[0] <= 607 and 0 <= coords[1] <= 285 and 0 <= coords[2] <= 408):
+            raise ValueError(f"{label} coordinates out of AP/SI/LR range: {coords}")
+    if args.radius <= 0 or args.weight <= 0:
+        raise ValueError("radius and weight must be positive")
+    with REGION_CSV_PATH.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=REGION_COLUMNS)
+        writer.writerow(row)
+    print(f"Added enabled region correction '{args.name}' to {rel(REGION_CSV_PATH)}")
+    write_json({"region_add_last": row})
+    return 0
+
+
+def list_region_corrections() -> int:
+    if not REGION_CSV_PATH.exists():
+        raise FileNotFoundError(f"Missing region correction CSV: {rel(REGION_CSV_PATH)}. Run region-template first.")
+    total = 0
+    enabled = 0
+    with REGION_CSV_PATH.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames != REGION_COLUMNS:
+            raise ValueError(f"Invalid region CSV columns. Expected exactly: {','.join(REGION_COLUMNS)}")
+        for rownum, row in enumerate(reader, start=2):
+            total += 1
+            if parse_bool(row["enabled"]):
+                enabled += 1
+                print(f"row {rownum}: {row['name']} target=({row['target_ap']},{row['target_si']},{row['target_lr']}) current=({row['current_ap']},{row['current_si']},{row['current_lr']}) radius={row['radius']} weight={row['weight']}")
+    print(f"Region corrections: {enabled} enabled / {total} rows in {rel(REGION_CSV_PATH)}")
+    return 0
+
 def affine_matrix(lm: LandmarkSet) -> np.ndarray:
     a = np.c_[lm.moving, np.ones(len(lm.moving))] * np.sqrt(lm.weights)[:, None]
     b = lm.fixed * np.sqrt(lm.weights)[:, None]
@@ -1021,12 +1114,39 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
+    add = sub.add_parser("region-add")
+    add.add_argument("name")
+    add.add_argument("target_ap", type=float)
+    add.add_argument("target_si", type=float)
+    add.add_argument("target_lr", type=float)
+    add.add_argument("current_ap", type=float)
+    add.add_argument("current_si", type=float)
+    add.add_argument("current_lr", type=float)
+    add.add_argument("radius", type=float, nargs="?", default=45.0)
+    add.add_argument("weight", type=float, nargs="?", default=1.0)
+    add.add_argument("--notes", default="")
     acc = sub.add_parser("landmarks-accept"); acc.add_argument("kind", choices=["affine", "warp"])
     args = parser.parse_args(argv)
     try:
-        return {"landmarks-status": status, "landmarks-template": create_template, "landmarks-affine": run_affine, "landmarks-warp": run_warp, "auto-affine": run_auto_affine, "auto-warp": run_auto_warp, "auto-micro-warp": run_auto_micro_warp, "region-template": create_region_template, "region-warp": run_region_warp, "ch03-install": install_ch03, "landmarks-reset": reset}.get(args.cmd, lambda: accept(args.kind))()
+        commands = {
+            "landmarks-status": status,
+            "landmarks-template": create_template,
+            "landmarks-affine": run_affine,
+            "landmarks-warp": run_warp,
+            "auto-affine": run_auto_affine,
+            "auto-warp": run_auto_warp,
+            "auto-micro-warp": run_auto_micro_warp,
+            "region-template": create_region_template,
+            "region-qc": run_region_qc,
+            "region-list": list_region_corrections,
+            "region-warp": run_region_warp,
+            "region-add": lambda: append_region_correction(args),
+            "ch03-install": install_ch03,
+            "landmarks-reset": reset,
+        }
+        return commands.get(args.cmd, lambda: accept(args.kind))()
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 1
