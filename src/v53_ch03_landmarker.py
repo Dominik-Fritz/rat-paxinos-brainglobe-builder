@@ -35,6 +35,7 @@ CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_landmarks.csv"
 REGION_CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_region_corrections.csv"
 BREGMA_CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_bregma_ap_map.csv"
 SOURCE_PATH = Path(os.environ.get("V53_WHS_NISSL_SOURCE", r"C:\Users\49152\.brainglobe\whs_sd_rat_39um_v1.2\reference.tiff"))
+WHS_ANNOTATION_PATH = Path(os.environ.get("V53_WHS_ANNOTATION", r"C:\Users\49152\.brainglobe\whs_sd_rat_39um_v1.2\annotation.tiff"))
 ACTIVE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference.tiff"
 AFFINE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_affine.tiff"
 WARP_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_warp.tiff"
@@ -90,6 +91,7 @@ def status(exit_missing_ok: bool = True) -> int:
     ensure_dirs()
     rows = {
         "whs_source": SOURCE_PATH,
+        "whs_annotation": WHS_ANNOTATION_PATH,
         "landmark_csv": CSV_PATH,
         "region_correction_csv": REGION_CSV_PATH,
         "bregma_ap_csv": BREGMA_CSV_PATH,
@@ -1414,6 +1416,153 @@ def map_displacement_chunked(base: np.ndarray, disp: np.ndarray, chunk: int = 32
     return out
 
 
+
+
+def structure_term_to_ids(path: Path) -> dict[str, set[int]]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    rows = data if isinstance(data, list) else data.get("structures", [])
+    out: dict[str, set[int]] = {}
+    for item in rows:
+        try:
+            sid = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        for key in ("acronym", "name"):
+            term = str(item.get(key, "")).strip().lower()
+            if term and term not in {"root", "whole brain", "background"}:
+                out.setdefault(term, set()).add(sid)
+    return out
+
+
+def orient_moving_labels_like_source(labels: np.ndarray, extra_flips: Iterable[int]) -> np.ndarray:
+    if labels.ndim != 3:
+        raise ValueError(f"Expected 3D WHS annotation, got shape {labels.shape} at {WHS_ANNOTATION_PATH}")
+    out = np.transpose(labels, PERM)
+    out = np.rot90(out, k=PRE_RESIZE_ROT90, axes=(1, 2))
+    for axis in TARGET_FLIPS:
+        out = np.flip(out, axis=axis)
+    out = apply_extra_flips(out, extra_flips)
+    if out.shape != TARGET_SHAPE:
+        out = transform.resize(out, TARGET_SHAPE, order=0, preserve_range=True, anti_aliasing=False).astype(labels.dtype)
+    return out.astype(np.int32, copy=False)
+
+
+def label_centroids(labels: np.ndarray, ids: set[int]) -> tuple[np.ndarray, int] | None:
+    ids = {int(i) for i in ids if int(i) != 0}
+    if not ids:
+        return None
+    mask = np.isin(labels, list(ids))
+    count = int(mask.sum())
+    if count < 32:
+        return None
+    return center_of_mass(mask), count
+
+
+@dataclass
+class LabelLandmarkSet:
+    names: list[str]
+    fixed: np.ndarray
+    moving: np.ndarray
+    weights: np.ndarray
+
+
+def build_label_landmarks(min_count: int = 12, max_count: int = 160) -> tuple[LabelLandmarkSet, dict, np.ndarray, np.ndarray, Path]:
+    fixed_labels_path = find_annotation_path(required=True)
+    fixed_labels, fixed_orientation = orient_fixed_labels(tifffile.imread(fixed_labels_path), fixed_labels_path)
+    if not WHS_ANNOTATION_PATH.exists():
+        raise FileNotFoundError(f"Missing WHS annotation for label-guided registration: {WHS_ANNOTATION_PATH}. Set V53_WHS_ANNOTATION if needed.")
+    fixed_mask = fixed_labels > 0
+    source, mat, context = load_source_for_auto_affine_context(fixed_mask)
+    extra_flips = context.get("extra_flips_after_v53_orientation", [])
+    if not extra_flips and isinstance(context.get("source_orientation"), dict):
+        extra_flips = ((context["source_orientation"].get("selected") or {}).get("extra_flips_after_v53_orientation", []))
+    moving_labels = orient_moving_labels_like_source(tifffile.imread(WHS_ANNOTATION_PATH), extra_flips)
+    fixed_terms = structure_term_to_ids(fixed_labels_path.parent / "structures.json")
+    moving_terms = structure_term_to_ids(WHS_ANNOTATION_PATH.parent / "structures.json")
+    common = sorted(set(fixed_terms) & set(moving_terms))
+    names: list[str] = []
+    fixed_pts: list[np.ndarray] = []
+    moving_pts: list[np.ndarray] = []
+    weights: list[float] = []
+    for term in common:
+        fc = label_centroids(fixed_labels, fixed_terms[term])
+        mc = label_centroids(moving_labels, moving_terms[term])
+        if fc is None or mc is None:
+            continue
+        fpt, fcount = fc
+        mpt, mcount = mc
+        names.append(term)
+        fixed_pts.append(fpt)
+        moving_pts.append(mpt)
+        weights.append(float(np.sqrt(min(fcount, mcount))))
+    if len(names) < min_count:
+        raise ValueError(f"Need at least {min_count} matched WHS/Paxinos label centroids; found {len(names)}. Check WHS annotation/structures paths.")
+    order = np.argsort(weights)[::-1][:max_count]
+    lm = LabelLandmarkSet(
+        [names[i] for i in order],
+        np.asarray([fixed_pts[i] for i in order], dtype=np.float32),
+        np.asarray([moving_pts[i] for i in order], dtype=np.float32),
+        np.asarray([weights[i] for i in order], dtype=np.float32),
+    )
+    meta = {
+        "fixed_annotation": str(fixed_labels_path),
+        "moving_annotation": str(WHS_ANNOTATION_PATH),
+        "common_term_count": len(common),
+        "matched_centroid_count": len(names),
+        "used_centroid_count": len(lm.names),
+        "fixed_orientation": fixed_orientation,
+        "affine_context": context,
+        "example_terms": lm.names[:25],
+    }
+    return lm, meta, source, fixed_mask, fixed_labels_path
+
+
+def weighted_affine_from_points(moving: np.ndarray, fixed: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    w = np.sqrt(np.maximum(weights, 1e-6))[:, None]
+    a = np.c_[moving, np.ones(len(moving))] * w
+    b = fixed * w
+    coeff, *_ = np.linalg.lstsq(a, b, rcond=None)
+    mat = np.eye(4)
+    mat[:3, :3] = coeff[:3, :].T
+    mat[:3, 3] = coeff[3, :]
+    return mat
+
+
+def run_labels_affine() -> int:
+    lm, meta, source, fixed_mask, _ = build_label_landmarks()
+    mat = weighted_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    out = apply_affine(source, mat)
+    write_tiff(AFFINE_PATH, out)
+    qc_slices(out, REPORT_DIR / "qc_affine", "ch03_labels_affine")
+    qc_overlay_slices(out, fixed_mask, REPORT_DIR / "qc_affine", "ch03_labels_affine")
+    residual = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3] - lm.fixed
+    write_json({"labels_affine": {"candidate": rel(AFFINE_PATH), "method": "matched_whs_paxinos_structure_centroid_affine", "matrix_moving_to_fixed": mat.tolist(), "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **meta}})
+    return 0
+
+
+def run_labels_warp() -> int:
+    lm, meta, source, fixed_mask, _ = build_label_landmarks()
+    mat = weighted_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    base = apply_affine(source, mat)
+    aff_moving = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3]
+    displacement = lm.fixed - aff_moving
+    grid_shape = tuple(max(8, s // 16) for s in TARGET_SHAPE)
+    axes = [np.linspace(0, s - 1, n) for s, n in zip(TARGET_SHAPE, grid_shape)]
+    mesh = np.meshgrid(*axes, indexing="ij")
+    pts = np.column_stack([m.ravel() for m in mesh])
+    rbf = RBFInterpolator(lm.fixed, displacement, kernel="thin_plate_spline", smoothing=10.0)
+    disp_small = rbf(pts).reshape(*grid_shape, 3)
+    disp = np.stack([ndimage.zoom(disp_small[..., i], np.array(TARGET_SHAPE) / np.array(grid_shape), order=1) for i in range(3)]).astype(np.float32)
+    disp = np.clip(disp, -24.0, 24.0)
+    warped = map_displacement_chunked(base, disp)
+    write_tiff(WARP_PATH, warped)
+    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_labels_warp")
+    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_labels_warp")
+    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_affine_plus_tps", "control_grid_shape": grid_shape, "max_displacement_clip_voxels": 24.0, **meta}})
+    return 0
+
 def run_affine() -> int:
     lm = read_landmarks(4); vol = load_oriented_source(); mat = affine_matrix(lm); out = apply_affine(vol, mat)
     write_tiff(AFFINE_PATH, out); qc_slices(out, REPORT_DIR / "qc_affine", "ch03_affine", lm)
@@ -1546,7 +1695,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1578,6 +1727,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "bregma-template": create_bregma_template,
             "bregma-init-affine": init_bregma_from_affine,
             "bregma-warp": run_bregma_warp,
+            "labels-affine": run_labels_affine,
+            "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
             "landmarks-reset": reset,

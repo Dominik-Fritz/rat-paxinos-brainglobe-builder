@@ -23,6 +23,8 @@ if /I "%~1"=="auto-region-warp" goto run
 if /I "%~1"=="bregma-template" goto run
 if /I "%~1"=="bregma-init-affine" goto run
 if /I "%~1"=="bregma-warp" goto run
+if /I "%~1"=="labels-affine" goto run
+if /I "%~1"=="labels-warp" goto run
 if /I "%~1"=="ch03-install" goto run
 if /I "%~1"=="landmarks-accept" goto run
 if /I "%~1"=="landmarks-reset" goto run
@@ -53,6 +55,8 @@ echo   run_ch03_registration.bat auto-region-warp
 echo   run_ch03_registration.bat bregma-template
 echo   run_ch03_registration.bat bregma-init-affine
 echo   run_ch03_registration.bat bregma-warp
+echo   run_ch03_registration.bat labels-affine
+echo   run_ch03_registration.bat labels-warp
 echo   run_ch03_registration.bat ch03-install
 echo   run_ch03_registration.bat landmarks-accept affine
 echo   run_ch03_registration.bat landmarks-accept warp
