@@ -923,7 +923,8 @@ def read_bregma_ap_map(min_count: int = 2) -> BregmaAPMap:
             if not parse_bool(row["enabled"]):
                 continue
             try:
-                bregma_mm = float(row["bregma_mm"])
+                raw_bregma = str(row["bregma_mm"]).strip()
+                bregma_mm = float(raw_bregma) if raw_bregma else float("nan")
                 fixed_ap = float(row["fixed_ap"])
                 moving_ap = float(row["moving_ap"])
                 wt = float(row["weight"] or 1)
@@ -978,7 +979,7 @@ def run_bregma_warp() -> int:
         "affine_context": context,
         "matrix_moving_to_fixed": mat.tolist(),
         "anchor_count": len(lm.names),
-        "anchors": [{"name": n, "bregma_mm": float(b), "fixed_ap": float(f), "moving_ap": float(m)} for n, b, f, m in zip(lm.names, lm.bregma_mm, lm.fixed_ap, lm.moving_ap)],
+        "anchors": [{"name": n, "bregma_mm": (float(b) if np.isfinite(b) else None), "fixed_ap": float(f), "moving_ap": float(m)} for n, b, f, m in zip(lm.names, lm.bregma_mm, lm.fixed_ap, lm.moving_ap)],
         "source_ap_min_max": [float(source_ap.min()), float(source_ap.max())],
         "source_ap_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)],
     }})
