@@ -633,9 +633,9 @@ def list_region_corrections() -> int:
 def automatic_region_corrections_from_edges(
     fixed_labels: np.ndarray,
     moving_vol: np.ndarray,
-    ap_step: int = 32,
-    tile_size: int = 96,
-    max_shift: float = 10.0,
+    ap_step: int = 24,
+    tile_size: int = 64,
+    max_shift: float = 4.0,
 ) -> tuple[RegionCorrectionSet, dict]:
     """Create conservative local region corrections from label boundaries and Nissl edges.
 
@@ -669,7 +669,7 @@ def automatic_region_corrections_from_edges(
                 fixed_tile = fixed_edge[si0:si1, lr0:lr1]
                 moving_tile = moving_edge[si0:si1, lr0:lr1]
                 attempted += 1
-                if fixed_tile.sum() < 25 or moving_tile.sum() < 2.0:
+                if fixed_tile.sum() < 18 or moving_tile.sum() < 1.5:
                     rejected += 1
                     continue
                 window = np.outer(np.hanning(fixed_tile.shape[0]), np.hanning(fixed_tile.shape[1])).astype(np.float32)
@@ -688,14 +688,14 @@ def automatic_region_corrections_from_edges(
                     continue
                 shift = np.clip(shift[:2].astype(np.float32), -max_shift, max_shift)
                 shift_norm = float(np.linalg.norm(shift))
-                if shift_norm < 0.75 or shift_norm >= max_shift * 1.42:
+                if shift_norm < 0.5 or shift_norm > max_shift:
                     rejected += 1
                     continue
                 name = f"auto_region_ap{ap:03d}_si{si:03d}_lr{lr:03d}"
                 names.append(name)
                 target.append([float(ap), float(si), float(lr)])
                 current.append([float(ap), float(si - shift[0]), float(lr - shift[1])])
-                radii.append(float(tile_size * 0.65))
+                radii.append(float(tile_size * 0.55))
                 confidence = 1.0 / (1.0 + max(float(error), 0.0)) if np.isfinite(error) else 0.5
                 weights.append(float(np.clip(confidence, 0.25, 1.0)))
                 errors.append(float(error) if np.isfinite(error) else 0.0)
@@ -717,6 +717,36 @@ def automatic_region_corrections_from_edges(
     return lm, metrics
 
 
+
+def edge_alignment_score(fixed_labels: np.ndarray, moving_vol: np.ndarray, factor: int = 4) -> dict:
+    """Score how strongly Nissl edges fall on Paxinos label boundaries.
+
+    Higher is better. The score is intentionally simple and deterministic so it
+    can be used as a safety gate before overwriting a good warp candidate.
+    """
+    small_shape = tuple(max(8, s // factor) for s in TARGET_SHAPE)
+    zoom = np.asarray(small_shape) / np.asarray(TARGET_SHAPE)
+    labels_small = ndimage.zoom(fixed_labels, zoom, order=0)
+    moving_small = ndimage.zoom(moving_vol.astype(np.float32, copy=False), zoom, order=1)
+    values: list[float] = []
+    valid_slices = 0
+    for ap in range(small_shape[0]):
+        boundary = label_boundary_2d(labels_small[ap])
+        if boundary.sum() < 20:
+            continue
+        moving_slice = exposure.rescale_intensity(moving_small[ap], out_range=(0, 1)).astype(np.float32)
+        edge = filters.sobel(moving_slice).astype(np.float32)
+        if edge.max() <= 0:
+            continue
+        edge /= float(edge.max())
+        values.append(float(edge[boundary].mean()))
+        valid_slices += 1
+    return {
+        "edge_alignment_factor": factor,
+        "edge_alignment_valid_slices": valid_slices,
+        "edge_alignment_score": float(np.mean(values)) if values else 0.0,
+    }
+
 def run_auto_region_warp() -> int:
     if not WARP_PATH.exists():
         run_auto_warp()
@@ -728,10 +758,19 @@ def run_auto_region_warp() -> int:
     disp_small = local_region_displacement(lm, grid_shape)
     disp = np.stack([ndimage.zoom(disp_small[..., i], np.array(TARGET_SHAPE) / np.array(grid_shape), order=1) for i in range(3)]).astype(np.float32)
     warped = map_displacement_chunked(base, disp)
-    write_tiff(WARP_PATH, warped)
-    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
-    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
-    write_json({"auto_region_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "automatic_local_tile_edge_region_correction", "grid_shape": grid_shape, **metrics}})
+    before_score = edge_alignment_score(fixed_labels, base)
+    after_score = edge_alignment_score(fixed_labels, warped)
+    improvement = after_score["edge_alignment_score"] - before_score["edge_alignment_score"]
+    accepted = improvement >= 0.002
+    output = warped if accepted else base
+    write_tiff(WARP_PATH, output)
+    qc_slices(output, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
+    qc_overlay_slices(output, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
+    write_json({"auto_region_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "automatic_local_tile_edge_region_correction_with_score_gate", "grid_shape": grid_shape, "accepted": accepted, "score_improvement": float(improvement), "score_before": before_score, "score_after": after_score, **metrics}})
+    if accepted:
+        print(f"Accepted automatic region warp: edge score improved by {improvement:.6f}")
+    else:
+        print(f"Rejected automatic region warp: edge score improvement {improvement:.6f} is below threshold; kept previous warp candidate.")
     return 0
 
 def affine_matrix(lm: LandmarkSet) -> np.ndarray:
