@@ -881,6 +881,58 @@ def init_bregma_from_affine() -> int:
     return 0
 
 
+
+
+def slice_center_size(mask2d: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    coords = np.argwhere(mask2d)
+    if coords.size == 0:
+        return None
+    center = (coords.min(axis=0) + coords.max(axis=0)) / 2.0
+    size = coords.max(axis=0) - coords.min(axis=0) + 1.0
+    return center.astype(np.float32), size.astype(np.float32)
+
+
+def bregma_slice_geometry(fixed_mask: np.ndarray, source_mask: np.ndarray, source_ap: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Estimate AP-locked per-slice SI/LR center and scale for Bregma warping."""
+    fixed_center = np.zeros((TARGET_SHAPE[0], 2), dtype=np.float32)
+    moving_center = np.zeros((TARGET_SHAPE[0], 2), dtype=np.float32)
+    slice_scale = np.ones((TARGET_SHAPE[0], 2), dtype=np.float32)
+    valid = np.zeros(TARGET_SHAPE[0], dtype=bool)
+    default_center = np.asarray([(TARGET_SHAPE[1] - 1) / 2, (TARGET_SHAPE[2] - 1) / 2], dtype=np.float32)
+    for ap in range(TARGET_SHAPE[0]):
+        fixed_stats = slice_center_size(fixed_mask[ap])
+        src_idx = int(np.clip(round(float(source_ap[ap])), 0, TARGET_SHAPE[0] - 1))
+        moving_stats = slice_center_size(source_mask[src_idx])
+        if fixed_stats is None or moving_stats is None:
+            fixed_center[ap] = default_center
+            moving_center[ap] = default_center
+            continue
+        fc, fs = fixed_stats
+        mc, ms = moving_stats
+        fixed_center[ap] = fc
+        moving_center[ap] = mc
+        slice_scale[ap] = np.clip(fs / np.maximum(ms, 1.0), 0.70, 1.55)
+        valid[ap] = True
+    valid_idx = np.flatnonzero(valid)
+    if valid_idx.size < 8:
+        raise ValueError(f"Bregma slice geometry needs at least 8 valid AP slices with fixed and moving masks; found {int(valid_idx.size)}.")
+    x = np.arange(TARGET_SHAPE[0])
+    for axis in range(2):
+        fixed_center[:, axis] = np.interp(x, valid_idx, fixed_center[valid, axis])
+        moving_center[:, axis] = np.interp(x, valid_idx, moving_center[valid, axis])
+        slice_scale[:, axis] = np.interp(x, valid_idx, slice_scale[valid, axis])
+        fixed_center[:, axis] = ndimage.gaussian_filter1d(fixed_center[:, axis], sigma=2.0)
+        moving_center[:, axis] = ndimage.gaussian_filter1d(moving_center[:, axis], sigma=2.0)
+        slice_scale[:, axis] = ndimage.gaussian_filter1d(slice_scale[:, axis], sigma=2.0)
+    slice_scale = np.clip(slice_scale, 0.70, 1.55).astype(np.float32)
+    metrics = {
+        "bregma_slice_geometry_valid_slices": int(valid.sum()),
+        "bregma_slice_scale_si_lr_min": [float(slice_scale[:, 0].min()), float(slice_scale[:, 1].min())],
+        "bregma_slice_scale_si_lr_max": [float(slice_scale[:, 0].max()), float(slice_scale[:, 1].max())],
+        "bregma_slice_geometry_note": "AP is Bregma-anchored; SI/LR centers and scales are fitted per AP slice from fixed and WHS/Nissl brain masks.",
+    }
+    return fixed_center, moving_center, slice_scale, metrics
+
 def map_bregma_affine_source_chunked(source: np.ndarray, mat: np.ndarray, source_ap: np.ndarray, chunk: int = 24) -> np.ndarray:
     inv = np.linalg.inv(mat)
     out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
@@ -975,10 +1027,19 @@ def run_bregma_warp() -> int:
         print(f"WARNING: {coverage_warning}")
     bregma_mm_present = bool(np.isfinite(lm.bregma_mm).any())
     # Directly sample the oriented WHS/Nissl source: AP is controlled only by the
-    # Bregma anchor map, while SI/LR come from the reproducible affine context.
-    # This avoids double-resampling an already-affined candidate and makes anchor
-    # semantics unambiguous: moving_ap always means source/oriented WHS AP.
-    warped = map_bregma_affine_source_chunked(source, mat, source_ap)
+    # Bregma anchor map. SI/LR use per-slice mask center/scale fitting so the
+    # WHS/Nissl volume is packed into the Paxinos label volume more tightly than
+    # the global affine fallback alone.
+    source_mask = moving_brain_mask(source)
+    fixed_center, moving_center, slice_scale, geometry_metrics = bregma_slice_geometry(fixed_mask, source_mask, source_ap)
+    warped = map_auto_warp_chunked(
+        source,
+        np.zeros((TARGET_SHAPE[0], 3), dtype=np.float32),
+        source_ap=source_ap,
+        slice_scale=slice_scale,
+        fixed_center=fixed_center,
+        moving_center=moving_center,
+    )
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
@@ -986,9 +1047,10 @@ def run_bregma_warp() -> int:
         "candidate": rel(WARP_PATH),
         "annotation_tiff": str(annotation_path),
         "fixed_orientation": fixed_orientation,
-        "method": "direct_source_explicit_bregma_ap_map_affine_si_lr",
+        "method": "direct_source_bregma_ap_map_slice_mask_si_lr_fit",
         "affine_context": context,
         "matrix_moving_to_fixed": mat.tolist(),
+        **geometry_metrics,
         "anchor_count": len(lm.names),
         "anchor_fixed_ap_span": anchor_span,
         "coverage_warning": coverage_warning,
