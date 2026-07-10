@@ -629,6 +629,111 @@ def list_region_corrections() -> int:
     print(f"Region corrections: {enabled} enabled / {total} rows in {rel(REGION_CSV_PATH)}")
     return 0
 
+
+def automatic_region_corrections_from_edges(
+    fixed_labels: np.ndarray,
+    moving_vol: np.ndarray,
+    ap_step: int = 32,
+    tile_size: int = 96,
+    max_shift: float = 10.0,
+) -> tuple[RegionCorrectionSet, dict]:
+    """Create conservative local region corrections from label boundaries and Nissl edges.
+
+    This is intended as the non-manual counterpart to region-add/region-warp: it
+    samples many AP/SI/LR tiles, estimates small local SI/LR shifts by phase
+    correlation, and turns reliable shifts into soft Gaussian control points.
+    """
+    names: list[str] = []
+    target: list[list[float]] = []
+    current: list[list[float]] = []
+    radii: list[float] = []
+    weights: list[float] = []
+    half = tile_size // 2
+    ap_values = range(48, TARGET_SHAPE[0] - 48, ap_step)
+    si_values = range(half, TARGET_SHAPE[1] - half + 1, half)
+    lr_values = range(half, TARGET_SHAPE[2] - half + 1, half)
+    attempted = 0
+    rejected = 0
+    errors: list[float] = []
+    shifts: list[float] = []
+    for ap in ap_values:
+        fixed_edge = label_boundary_2d(fixed_labels[ap]).astype(np.float32)
+        moving_slice = exposure.rescale_intensity(moving_vol[ap], out_range=(0, 1)).astype(np.float32)
+        moving_edge = filters.sobel(moving_slice).astype(np.float32)
+        if moving_edge.max() > 0:
+            moving_edge /= float(moving_edge.max())
+        for si in si_values:
+            si0, si1 = si - half, si + half
+            for lr in lr_values:
+                lr0, lr1 = lr - half, lr + half
+                fixed_tile = fixed_edge[si0:si1, lr0:lr1]
+                moving_tile = moving_edge[si0:si1, lr0:lr1]
+                attempted += 1
+                if fixed_tile.sum() < 25 or moving_tile.sum() < 2.0:
+                    rejected += 1
+                    continue
+                window = np.outer(np.hanning(fixed_tile.shape[0]), np.hanning(fixed_tile.shape[1])).astype(np.float32)
+                try:
+                    shift, error, _ = phase_cross_correlation(
+                        ndimage.gaussian_filter(fixed_tile * window, sigma=1.0),
+                        ndimage.gaussian_filter(moving_tile * window, sigma=1.0),
+                        upsample_factor=1,
+                        normalization=None,
+                    )
+                except Exception:
+                    rejected += 1
+                    continue
+                if not np.all(np.isfinite(shift[:2])):
+                    rejected += 1
+                    continue
+                shift = np.clip(shift[:2].astype(np.float32), -max_shift, max_shift)
+                shift_norm = float(np.linalg.norm(shift))
+                if shift_norm < 0.75 or shift_norm >= max_shift * 1.42:
+                    rejected += 1
+                    continue
+                name = f"auto_region_ap{ap:03d}_si{si:03d}_lr{lr:03d}"
+                names.append(name)
+                target.append([float(ap), float(si), float(lr)])
+                current.append([float(ap), float(si - shift[0]), float(lr - shift[1])])
+                radii.append(float(tile_size * 0.65))
+                confidence = 1.0 / (1.0 + max(float(error), 0.0)) if np.isfinite(error) else 0.5
+                weights.append(float(np.clip(confidence, 0.25, 1.0)))
+                errors.append(float(error) if np.isfinite(error) else 0.0)
+                shifts.append(shift_norm)
+    if not target:
+        raise ValueError("Auto region warp could not find any reliable local edge corrections. Use region-qc/region-add or adjust source data.")
+    lm = RegionCorrectionSet(names, np.asarray(target, dtype=np.float32), np.asarray(current, dtype=np.float32), np.asarray(radii, dtype=np.float32), np.asarray(weights, dtype=np.float32))
+    metrics = {
+        "auto_region_attempted_tiles": attempted,
+        "auto_region_rejected_tiles": rejected,
+        "auto_region_count": len(names),
+        "auto_region_ap_step": ap_step,
+        "auto_region_tile_size": tile_size,
+        "auto_region_max_shift": max_shift,
+        "auto_region_shift_min_max": [float(np.min(shifts)), float(np.max(shifts))],
+        "auto_region_shift_mean": float(np.mean(shifts)),
+        "auto_region_phase_error_mean": float(np.mean(errors)) if errors else None,
+    }
+    return lm, metrics
+
+
+def run_auto_region_warp() -> int:
+    if not WARP_PATH.exists():
+        run_auto_warp()
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    fixed_labels, _ = orient_fixed_labels(tifffile.imread(annotation_path), annotation_path)
+    base = tifffile.imread(WARP_PATH)
+    lm, metrics = automatic_region_corrections_from_edges(fixed_labels, base)
+    grid_shape = tuple(max(12, s // 12) for s in TARGET_SHAPE)
+    disp_small = local_region_displacement(lm, grid_shape)
+    disp = np.stack([ndimage.zoom(disp_small[..., i], np.array(TARGET_SHAPE) / np.array(grid_shape), order=1) for i in range(3)]).astype(np.float32)
+    warped = map_displacement_chunked(base, disp)
+    write_tiff(WARP_PATH, warped)
+    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
+    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_auto_region_warp")
+    write_json({"auto_region_warp": {"candidate": rel(WARP_PATH), "annotation_tiff": str(annotation_path), "fixed_orientation": fixed_orientation, "method": "automatic_local_tile_edge_region_correction", "grid_shape": grid_shape, **metrics}})
+    return 0
+
 def affine_matrix(lm: LandmarkSet) -> np.ndarray:
     a = np.c_[lm.moving, np.ones(len(lm.moving))] * np.sqrt(lm.weights)[:, None]
     b = lm.fixed * np.sqrt(lm.weights)[:, None]
@@ -1114,7 +1219,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1142,6 +1247,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "region-qc": run_region_qc,
             "region-list": list_region_corrections,
             "region-warp": run_region_warp,
+            "auto-region-warp": run_auto_region_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
             "landmarks-reset": reset,
