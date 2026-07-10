@@ -1519,6 +1519,41 @@ def build_label_landmarks(min_count: int = 12, max_count: int = 160) -> tuple[La
     return lm, meta, source, fixed_mask, fixed_labels_path
 
 
+
+
+def robust_weighted_percentile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    order = np.argsort(values)
+    values = values[order]
+    weights = np.maximum(weights[order], 1e-6)
+    cdf = np.cumsum(weights) / np.sum(weights)
+    return float(np.interp(q / 100.0, cdf, values))
+
+
+def bounded_axis_affine_from_points(moving: np.ndarray, fixed: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Fit a no-shear, no-reflection AP/SI/LR affine from label centroids.
+
+    Full affine fits are too dangerous with cross-atlas label correspondences: a
+    few ambiguous bilateral/common acronyms can introduce shears or reflections
+    and collapse one axis. This constrained fit keeps anatomy upright and only
+    estimates robust per-axis scale plus translation.
+    """
+    mat = np.eye(4, dtype=np.float64)
+    metrics = {"axis_scale_ap_si_lr": [], "axis_translation_ap_si_lr": [], "axis_fit_mode": "weighted_p05_p95_scale_weighted_median_translation_no_shear_no_reflection"}
+    for axis in range(3):
+        m05 = robust_weighted_percentile(moving[:, axis], weights, 5)
+        m95 = robust_weighted_percentile(moving[:, axis], weights, 95)
+        f05 = robust_weighted_percentile(fixed[:, axis], weights, 5)
+        f95 = robust_weighted_percentile(fixed[:, axis], weights, 95)
+        raw_scale = (f95 - f05) / max(m95 - m05, 1.0)
+        scale = float(np.clip(raw_scale, 0.60, 1.70))
+        residual = fixed[:, axis] - scale * moving[:, axis]
+        translation = robust_weighted_percentile(residual, weights, 50)
+        mat[axis, axis] = scale
+        mat[axis, 3] = translation
+        metrics["axis_scale_ap_si_lr"].append(scale)
+        metrics["axis_translation_ap_si_lr"].append(float(translation))
+    return mat, metrics
+
 def weighted_affine_from_points(moving: np.ndarray, fixed: np.ndarray, weights: np.ndarray) -> np.ndarray:
     w = np.sqrt(np.maximum(weights, 1e-6))[:, None]
     a = np.c_[moving, np.ones(len(moving))] * w
@@ -1532,19 +1567,19 @@ def weighted_affine_from_points(moving: np.ndarray, fixed: np.ndarray, weights: 
 
 def run_labels_affine() -> int:
     lm, meta, source, fixed_mask, _ = build_label_landmarks()
-    mat = weighted_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
     out = apply_affine(source, mat)
     write_tiff(AFFINE_PATH, out)
     qc_slices(out, REPORT_DIR / "qc_affine", "ch03_labels_affine")
     qc_overlay_slices(out, fixed_mask, REPORT_DIR / "qc_affine", "ch03_labels_affine")
     residual = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3] - lm.fixed
-    write_json({"labels_affine": {"candidate": rel(AFFINE_PATH), "method": "matched_whs_paxinos_structure_centroid_affine", "matrix_moving_to_fixed": mat.tolist(), "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **meta}})
+    write_json({"labels_affine": {"candidate": rel(AFFINE_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine", "matrix_moving_to_fixed": mat.tolist(), "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **fit_metrics, **meta}})
     return 0
 
 
 def run_labels_warp() -> int:
     lm, meta, source, fixed_mask, _ = build_label_landmarks()
-    mat = weighted_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
     base = apply_affine(source, mat)
     aff_moving = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3]
     displacement = lm.fixed - aff_moving
@@ -1560,7 +1595,7 @@ def run_labels_warp() -> int:
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_labels_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_labels_warp")
-    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_affine_plus_tps", "control_grid_shape": grid_shape, "max_displacement_clip_voxels": 24.0, **meta}})
+    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine_plus_tps", "matrix_moving_to_fixed": mat.tolist(), "control_grid_shape": grid_shape, "max_displacement_clip_voxels": 24.0, **fit_metrics, **meta}})
     return 0
 
 def run_affine() -> int:
