@@ -33,6 +33,7 @@ OPTIONAL_DIR = ROOT / "resources" / "optional_ch03"
 REPORT_DIR = ROOT / "reports" / "v53_ch03_landmarks"
 CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_landmarks.csv"
 REGION_CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_region_corrections.csv"
+BREGMA_CSV_PATH = OPTIONAL_DIR / "waxholm_to_paxinos_bregma_ap_map.csv"
 SOURCE_PATH = Path(os.environ.get("V53_WHS_NISSL_SOURCE", r"C:\Users\49152\.brainglobe\whs_sd_rat_39um_v1.2\reference.tiff"))
 ACTIVE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference.tiff"
 AFFINE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_affine.tiff"
@@ -52,6 +53,7 @@ PRE_RESIZE_ROT90 = -1
 TARGET_FLIPS = (0,)
 COLUMNS = ["enabled", "name", "fixed_ap", "fixed_si", "fixed_lr", "moving_ap", "moving_si", "moving_lr", "weight", "notes"]
 REGION_COLUMNS = ["enabled", "name", "target_ap", "target_si", "target_lr", "current_ap", "current_si", "current_lr", "radius", "weight", "notes"]
+BREGMA_COLUMNS = ["enabled", "name", "bregma_mm", "fixed_ap", "moving_ap", "weight", "notes"]
 
 
 @dataclass
@@ -90,6 +92,7 @@ def status(exit_missing_ok: bool = True) -> int:
         "whs_source": SOURCE_PATH,
         "landmark_csv": CSV_PATH,
         "region_correction_csv": REGION_CSV_PATH,
+        "bregma_ap_csv": BREGMA_CSV_PATH,
         "paxinos_annotation": find_annotation_path(required=False) or Path("<not found>"),
         "affine_candidate": AFFINE_PATH,
         "warp_candidate": WARP_PATH,
@@ -139,6 +142,28 @@ def create_region_template() -> int:
     write_json({"region_template": {"csv": rel(REGION_CSV_PATH)}})
     return 0
 
+
+
+def create_bregma_template() -> int:
+    ensure_dirs()
+    if BREGMA_CSV_PATH.exists():
+        print(f"Bregma AP CSV already exists; not overwriting: {rel(BREGMA_CSV_PATH)}")
+    else:
+        with BREGMA_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=BREGMA_COLUMNS)
+            writer.writeheader()
+            writer.writerow({
+                "enabled": "0",
+                "name": "example_bregma_anchor",
+                "bregma_mm": "",
+                "fixed_ap": "",
+                "moving_ap": "",
+                "weight": "1",
+                "notes": "fixed_ap=Paxinos AP index; moving_ap=oriented/affine WHS AP index at the same Bregma level. Enable with 1.",
+            })
+        print(f"Created Bregma AP CSV template: {rel(BREGMA_CSV_PATH)}")
+    write_json({"bregma_template": {"csv": rel(BREGMA_CSV_PATH)}})
+    return 0
 
 def load_oriented_source() -> np.ndarray:
     if not SOURCE_PATH.exists():
@@ -773,6 +798,92 @@ def run_auto_region_warp() -> int:
         print(f"Rejected automatic region warp: edge score improvement {improvement:.6f} is below threshold; kept previous warp candidate.")
     return 0
 
+
+@dataclass
+class BregmaAPMap:
+    names: list[str]
+    bregma_mm: np.ndarray
+    fixed_ap: np.ndarray
+    moving_ap: np.ndarray
+    weights: np.ndarray
+
+
+def read_bregma_ap_map(min_count: int = 2) -> BregmaAPMap:
+    if not BREGMA_CSV_PATH.exists():
+        raise FileNotFoundError(f"Missing Bregma AP CSV: {rel(BREGMA_CSV_PATH)}. Run bregma-template first.")
+    names: list[str] = []
+    bregma: list[float] = []
+    fixed: list[float] = []
+    moving: list[float] = []
+    weights: list[float] = []
+    with BREGMA_CSV_PATH.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames != BREGMA_COLUMNS:
+            raise ValueError(f"Invalid Bregma CSV columns. Expected exactly: {','.join(BREGMA_COLUMNS)}")
+        for rownum, row in enumerate(reader, start=2):
+            if not parse_bool(row["enabled"]):
+                continue
+            try:
+                bregma_mm = float(row["bregma_mm"])
+                fixed_ap = float(row["fixed_ap"])
+                moving_ap = float(row["moving_ap"])
+                wt = float(row["weight"] or 1)
+            except ValueError as exc:
+                raise ValueError(f"Invalid numeric value in enabled Bregma row {rownum}: {exc}") from exc
+            if not (0 <= fixed_ap <= 607 and 0 <= moving_ap <= 607):
+                raise ValueError(f"Bregma AP coordinates out of range on row {rownum}: fixed={fixed_ap}, moving={moving_ap}")
+            if wt <= 0:
+                raise ValueError(f"Bregma weight must be positive on row {rownum}")
+            names.append(row["name"] or f"row_{rownum}")
+            bregma.append(bregma_mm)
+            fixed.append(fixed_ap)
+            moving.append(moving_ap)
+            weights.append(wt)
+    if len(fixed) < min_count:
+        raise ValueError(f"Need at least {min_count} enabled Bregma AP anchors; found {len(fixed)}.")
+    order = np.argsort(fixed)
+    fixed_arr = np.asarray(fixed, dtype=np.float32)[order]
+    moving_arr = np.asarray(moving, dtype=np.float32)[order]
+    if np.any(np.diff(fixed_arr) <= 0):
+        raise ValueError("Enabled Bregma fixed_ap anchors must be strictly increasing after sorting.")
+    if np.any(np.diff(moving_arr) < 0):
+        raise ValueError("Enabled Bregma moving_ap anchors must be monotonic increasing; check AP direction/orientation.")
+    return BregmaAPMap([names[i] for i in order], np.asarray(bregma, dtype=np.float32)[order], fixed_arr, moving_arr, np.asarray(weights, dtype=np.float32)[order])
+
+
+def bregma_source_ap_for_target(lm: BregmaAPMap) -> np.ndarray:
+    target_ap = np.arange(TARGET_SHAPE[0], dtype=np.float32)
+    # np.interp clamps outside supplied anchors, which is conservative. Users should
+    # add rostral/caudal Bregma anchors if they want full-range AP extrapolation.
+    return np.interp(target_ap, lm.fixed_ap, lm.moving_ap).astype(np.float32)
+
+
+def run_bregma_warp() -> int:
+    lm = read_bregma_ap_map(2)
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    base = tifffile.imread(AFFINE_PATH) if AFFINE_PATH.exists() else None
+    if base is None:
+        run_auto_affine()
+        base = tifffile.imread(AFFINE_PATH)
+    source_ap = bregma_source_ap_for_target(lm)
+    # Preserve the already-estimated SI/LR affine placement while replacing only AP
+    # with explicit Bregma anchors. This is intended as the most reproducible AP path.
+    warped = map_auto_warp_chunked(base, np.zeros((TARGET_SHAPE[0], 3), dtype=np.float32), source_ap=source_ap)
+    write_tiff(WARP_PATH, warped)
+    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
+    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
+    write_json({"bregma_warp": {
+        "candidate": rel(WARP_PATH),
+        "annotation_tiff": str(annotation_path),
+        "fixed_orientation": fixed_orientation,
+        "method": "explicit_bregma_ap_map_preserve_affine_si_lr",
+        "anchor_count": len(lm.names),
+        "anchors": [{"name": n, "bregma_mm": float(b), "fixed_ap": float(f), "moving_ap": float(m)} for n, b, f, m in zip(lm.names, lm.bregma_mm, lm.fixed_ap, lm.moving_ap)],
+        "source_ap_min_max": [float(source_ap.min()), float(source_ap.max())],
+        "source_ap_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)],
+    }})
+    return 0
+
 def affine_matrix(lm: LandmarkSet) -> np.ndarray:
     a = np.c_[lm.moving, np.ones(len(lm.moving))] * np.sqrt(lm.weights)[:, None]
     b = lm.fixed * np.sqrt(lm.weights)[:, None]
@@ -1258,7 +1369,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1287,6 +1398,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "region-list": list_region_corrections,
             "region-warp": run_region_warp,
             "auto-region-warp": run_auto_region_warp,
+            "bregma-template": create_bregma_template,
+            "bregma-warp": run_bregma_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
             "landmarks-reset": reset,

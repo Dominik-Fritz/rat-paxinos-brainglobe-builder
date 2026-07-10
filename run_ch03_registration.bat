@@ -20,6 +20,8 @@ if /I "%~1"=="region-add" goto run
 if /I "%~1"=="region-list" goto run
 if /I "%~1"=="region-warp" goto run
 if /I "%~1"=="auto-region-warp" goto run
+if /I "%~1"=="bregma-template" goto run
+if /I "%~1"=="bregma-warp" goto run
 if /I "%~1"=="ch03-install" goto run
 if /I "%~1"=="landmarks-accept" goto run
 if /I "%~1"=="landmarks-reset" goto run
@@ -47,6 +49,8 @@ echo   run_ch03_registration.bat region-add NAME TARGET_AP TARGET_SI TARGET_LR C
 echo   run_ch03_registration.bat region-list
 echo   run_ch03_registration.bat region-warp
 echo   run_ch03_registration.bat auto-region-warp
+echo   run_ch03_registration.bat bregma-template
+echo   run_ch03_registration.bat bregma-warp
 echo   run_ch03_registration.bat ch03-install
 echo   run_ch03_registration.bat landmarks-accept affine
 echo   run_ch03_registration.bat landmarks-accept warp
