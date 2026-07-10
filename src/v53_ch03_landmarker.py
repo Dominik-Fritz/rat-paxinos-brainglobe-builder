@@ -925,6 +925,8 @@ def read_bregma_ap_map(min_count: int = 2) -> BregmaAPMap:
             try:
                 raw_bregma = str(row["bregma_mm"]).strip()
                 bregma_mm = float(raw_bregma) if raw_bregma else float("nan")
+                if str(row["fixed_ap"]).strip() == "" or str(row["moving_ap"]).strip() == "":
+                    raise ValueError("fixed_ap and moving_ap are required for enabled Bregma anchors")
                 fixed_ap = float(row["fixed_ap"])
                 moving_ap = float(row["moving_ap"])
                 wt = float(row["weight"] or 1)
@@ -963,6 +965,15 @@ def run_bregma_warp() -> int:
     fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
     source, mat, context = load_source_for_auto_affine_context(fixed_mask)
     source_ap = bregma_source_ap_for_target(lm)
+    anchor_span = [float(lm.fixed_ap.min()), float(lm.fixed_ap.max())]
+    coverage_warning = None
+    if anchor_span[0] > 0 or anchor_span[1] < TARGET_SHAPE[0] - 1:
+        coverage_warning = (
+            f"Bregma AP anchors cover fixed AP {anchor_span[0]:.1f}-{anchor_span[1]:.1f}; "
+            f"outside this range source AP is clamped. Add rostral/caudal anchors for full-range AP mapping."
+        )
+        print(f"WARNING: {coverage_warning}")
+    bregma_mm_present = bool(np.isfinite(lm.bregma_mm).any())
     # Directly sample the oriented WHS/Nissl source: AP is controlled only by the
     # Bregma anchor map, while SI/LR come from the reproducible affine context.
     # This avoids double-resampling an already-affined candidate and makes anchor
@@ -979,6 +990,9 @@ def run_bregma_warp() -> int:
         "affine_context": context,
         "matrix_moving_to_fixed": mat.tolist(),
         "anchor_count": len(lm.names),
+        "anchor_fixed_ap_span": anchor_span,
+        "coverage_warning": coverage_warning,
+        "bregma_mm_present": bregma_mm_present,
         "anchors": [{"name": n, "bregma_mm": (float(b) if np.isfinite(b) else None), "fixed_ap": float(f), "moving_ap": float(m)} for n, b, f, m in zip(lm.names, lm.bregma_mm, lm.fixed_ap, lm.moving_ap)],
         "source_ap_min_max": [float(source_ap.min()), float(source_ap.max())],
         "source_ap_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)],
