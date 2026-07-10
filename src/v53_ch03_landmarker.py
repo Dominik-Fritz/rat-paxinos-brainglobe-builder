@@ -799,6 +799,105 @@ def run_auto_region_warp() -> int:
     return 0
 
 
+
+
+def read_report() -> dict:
+    if not REPORT_JSON.exists():
+        return {}
+    try:
+        return json.loads(REPORT_JSON.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def apply_extra_flips(vol: np.ndarray, axes: Iterable[int]) -> np.ndarray:
+    out = vol
+    for axis in axes:
+        out = np.flip(out, axis=int(axis))
+    return out.astype(np.float32, copy=False)
+
+
+def load_source_for_auto_affine_context(fixed_mask: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Return the source volume and affine matrix used as Bregma warp context.
+
+    Earlier bregma-warp versions sampled the already-affined candidate, which made
+    the AP anchor semantics ambiguous. This helper restores the direct path:
+    original oriented WHS/Nissl source -> explicit Bregma AP map + affine SI/LR.
+    """
+    report = read_report()
+    auto = report.get("auto_affine", {}) if isinstance(report.get("auto_affine"), dict) else {}
+    matrix = auto.get("matrix_moving_to_fixed")
+    selected = ((auto.get("source_orientation") or {}).get("selected") or {}) if isinstance(auto.get("source_orientation"), dict) else {}
+    if matrix is not None:
+        vol = load_oriented_source()
+        vol = apply_extra_flips(vol, selected.get("extra_flips_after_v53_orientation", []))
+        return vol, np.asarray(matrix, dtype=np.float64), {"source": "auto_affine_report", "extra_flips_after_v53_orientation": selected.get("extra_flips_after_v53_orientation", [])}
+    if fixed_mask is None:
+        fixed_mask, _, _ = load_fixed_label_mask()
+    vol, source_orientation = choose_best_auto_oriented_source(fixed_mask)
+    mat, _ = automatic_affine_matrix(vol, fixed_mask)
+    return vol, mat, {"source": "computed_now", "source_orientation": source_orientation}
+
+
+def affine_ap_samples(mat: np.ndarray, sample_count: int = 7) -> list[tuple[float, float]]:
+    inv = np.linalg.inv(mat)
+    fixed_ap = np.linspace(0, TARGET_SHAPE[0] - 1, sample_count, dtype=np.float64)
+    fixed_center = np.column_stack([
+        fixed_ap,
+        np.full(sample_count, (TARGET_SHAPE[1] - 1) / 2, dtype=np.float64),
+        np.full(sample_count, (TARGET_SHAPE[2] - 1) / 2, dtype=np.float64),
+        np.ones(sample_count, dtype=np.float64),
+    ])
+    moving = fixed_center @ inv.T
+    moving_ap = np.clip(moving[:, 0], 0, TARGET_SHAPE[0] - 1)
+    return [(float(f), float(m)) for f, m in zip(fixed_ap, moving_ap)]
+
+
+def init_bregma_from_affine() -> int:
+    ensure_dirs()
+    fixed_mask, _, _ = load_fixed_label_mask()
+    _, mat, context = load_source_for_auto_affine_context(fixed_mask)
+    samples = affine_ap_samples(mat, sample_count=7)
+    if BREGMA_CSV_PATH.exists():
+        backup = BREGMA_CSV_PATH.with_suffix(".csv.before_affine_init")
+        shutil.copy2(BREGMA_CSV_PATH, backup)
+        print(f"Backed up existing Bregma CSV to: {rel(backup)}")
+    with BREGMA_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=BREGMA_COLUMNS)
+        writer.writeheader()
+        for idx, (fixed_ap, moving_ap) in enumerate(samples, start=1):
+            writer.writerow({
+                "enabled": "1",
+                "name": f"affine_ap_anchor_{idx}",
+                "bregma_mm": "",
+                "fixed_ap": f"{fixed_ap:.3f}",
+                "moving_ap": f"{moving_ap:.3f}",
+                "weight": "0.5",
+                "notes": "Auto-initialized from affine AP mapping; replace with real Bregma AP anchors when available.",
+            })
+    write_json({"bregma_init_affine": {"csv": rel(BREGMA_CSV_PATH), "sample_count": len(samples), "context": context, "note": "Affine initialization is a reproducible fallback, not a true Bregma calibration."}})
+    print(f"Wrote affine-initialized Bregma AP CSV: {rel(BREGMA_CSV_PATH)}")
+    print("Important: replace these fallback anchors with real Bregma AP correspondences for best anatomical results.")
+    return 0
+
+
+def map_bregma_affine_source_chunked(source: np.ndarray, mat: np.ndarray, source_ap: np.ndarray, chunk: int = 24) -> np.ndarray:
+    inv = np.linalg.inv(mat)
+    out = np.zeros(TARGET_SHAPE, dtype=np.uint16)
+    si = np.arange(TARGET_SHAPE[1], dtype=np.float32)
+    lr = np.arange(TARGET_SHAPE[2], dtype=np.float32)
+    for start in range(0, TARGET_SHAPE[0], chunk):
+        stop = min(start + chunk, TARGET_SHAPE[0])
+        ap = np.arange(start, stop, dtype=np.float32)
+        coords = np.meshgrid(ap, si, lr, indexing="ij")
+        fixed = np.stack([coords[0], coords[1], coords[2], np.ones_like(coords[0])], axis=0)
+        moving_si = inv[1, 0] * fixed[0] + inv[1, 1] * fixed[1] + inv[1, 2] * fixed[2] + inv[1, 3]
+        moving_lr = inv[2, 0] * fixed[0] + inv[2, 1] * fixed[1] + inv[2, 2] * fixed[2] + inv[2, 3]
+        moving_ap = np.broadcast_to(source_ap[start:stop, None, None], moving_si.shape)
+        sample = [moving_ap, moving_si, moving_lr]
+        out[start:stop] = ndimage.map_coordinates(source, sample, order=1, mode="constant", cval=0).astype(np.uint16)
+    return out
+
 @dataclass
 class BregmaAPMap:
     names: list[str]
@@ -861,14 +960,13 @@ def bregma_source_ap_for_target(lm: BregmaAPMap) -> np.ndarray:
 def run_bregma_warp() -> int:
     lm = read_bregma_ap_map(2)
     fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
-    base = tifffile.imread(AFFINE_PATH) if AFFINE_PATH.exists() else None
-    if base is None:
-        run_auto_affine()
-        base = tifffile.imread(AFFINE_PATH)
+    source, mat, context = load_source_for_auto_affine_context(fixed_mask)
     source_ap = bregma_source_ap_for_target(lm)
-    # Preserve the already-estimated SI/LR affine placement while replacing only AP
-    # with explicit Bregma anchors. This is intended as the most reproducible AP path.
-    warped = map_auto_warp_chunked(base, np.zeros((TARGET_SHAPE[0], 3), dtype=np.float32), source_ap=source_ap)
+    # Directly sample the oriented WHS/Nissl source: AP is controlled only by the
+    # Bregma anchor map, while SI/LR come from the reproducible affine context.
+    # This avoids double-resampling an already-affined candidate and makes anchor
+    # semantics unambiguous: moving_ap always means source/oriented WHS AP.
+    warped = map_bregma_affine_source_chunked(source, mat, source_ap)
     write_tiff(WARP_PATH, warped)
     qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
     qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_bregma_warp")
@@ -876,7 +974,9 @@ def run_bregma_warp() -> int:
         "candidate": rel(WARP_PATH),
         "annotation_tiff": str(annotation_path),
         "fixed_orientation": fixed_orientation,
-        "method": "explicit_bregma_ap_map_preserve_affine_si_lr",
+        "method": "direct_source_explicit_bregma_ap_map_affine_si_lr",
+        "affine_context": context,
+        "matrix_moving_to_fixed": mat.tolist(),
         "anchor_count": len(lm.names),
         "anchors": [{"name": n, "bregma_mm": float(b), "fixed_ap": float(f), "moving_ap": float(m)} for n, b, f, m in zip(lm.names, lm.bregma_mm, lm.fixed_ap, lm.moving_ap)],
         "source_ap_min_max": [float(source_ap.min()), float(source_ap.max())],
@@ -1369,7 +1469,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1399,6 +1499,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "region-warp": run_region_warp,
             "auto-region-warp": run_auto_region_warp,
             "bregma-template": create_bregma_template,
+            "bregma-init-affine": init_bregma_from_affine,
             "bregma-warp": run_bregma_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
