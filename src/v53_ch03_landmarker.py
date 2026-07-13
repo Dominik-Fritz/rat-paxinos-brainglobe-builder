@@ -1578,24 +1578,25 @@ def run_labels_affine() -> int:
 
 
 def run_labels_warp() -> int:
+    # Important safety choice:
+    # Matched WHS/Paxinos structure names are useful for a reproducible global
+    # placement, but they are not reliable enough to drive a dense non-linear
+    # TPS deformation. In real local tests, ambiguous cross-atlas correspondences
+    # produced folded/tilted Ch03 volumes even with clipped displacement fields.
+    # Therefore this command now deliberately writes the bounded label-guided
+    # affine result to the "warp" candidate path, so downstream accept/install
+    # commands can still use the usual workflow without risking catastrophic
+    # local folding. Use explicit hand-picked landmarks for any later non-linear
+    # deformation.
     lm, meta, source, fixed_mask, _ = build_label_landmarks()
     mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
     base = apply_affine(source, mat)
     aff_moving = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3]
-    displacement = lm.fixed - aff_moving
-    grid_shape = tuple(max(8, s // 16) for s in TARGET_SHAPE)
-    axes = [np.linspace(0, s - 1, n) for s, n in zip(TARGET_SHAPE, grid_shape)]
-    mesh = np.meshgrid(*axes, indexing="ij")
-    pts = np.column_stack([m.ravel() for m in mesh])
-    rbf = RBFInterpolator(lm.fixed, displacement, kernel="thin_plate_spline", smoothing=10.0)
-    disp_small = rbf(pts).reshape(*grid_shape, 3)
-    disp = np.stack([ndimage.zoom(disp_small[..., i], np.array(TARGET_SHAPE) / np.array(grid_shape), order=1) for i in range(3)]).astype(np.float32)
-    disp = np.clip(disp, -24.0, 24.0)
-    warped = map_displacement_chunked(base, disp)
-    write_tiff(WARP_PATH, warped)
-    qc_slices(warped, REPORT_DIR / "qc_warp", "ch03_labels_warp")
-    qc_overlay_slices(warped, fixed_mask, REPORT_DIR / "qc_warp", "ch03_labels_warp")
-    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine_plus_tps", "matrix_moving_to_fixed": mat.tolist(), "control_grid_shape": grid_shape, "max_displacement_clip_voxels": 24.0, **fit_metrics, **meta}})
+    residual = aff_moving - lm.fixed
+    write_tiff(WARP_PATH, base)
+    qc_slices(base, REPORT_DIR / "qc_warp", "ch03_labels_warp_safe_affine")
+    qc_overlay_slices(base, fixed_mask, REPORT_DIR / "qc_warp", "ch03_labels_warp_safe_affine")
+    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine_only_no_tps_safety", "matrix_moving_to_fixed": mat.tolist(), "nonlinear_tps_disabled": True, "safety_note": "Automatic WHS/Paxinos label-name matches are not trusted for dense deformation; this command writes the bounded label-guided affine result to avoid folded Ch03 volumes.", "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **fit_metrics, **meta}})
     return 0
 
 def run_affine() -> int:
