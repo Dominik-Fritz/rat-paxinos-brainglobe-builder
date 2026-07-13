@@ -40,6 +40,7 @@ ACTIVE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference.tiff"
 AFFINE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_affine.tiff"
 WARP_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_warp.tiff"
 WHS_LABEL_AFFINE_PATH = OPTIONAL_DIR / "waxholm_annotation_labels_affine.tiff"
+WHS_LABEL_WARP_PATH = OPTIONAL_DIR / "waxholm_annotation_labels_warp.tiff"
 ATLAS_CANDIDATES = [
     ROOT / "data" / "output" / "brainglobe_official_candidate" / "paxinos_watson_rat_40um",
     ROOT / "data" / "output" / "brainglobe_official_candidate" / "paxinos_watson_rat_40um_v1.0",
@@ -100,6 +101,7 @@ def status(exit_missing_ok: bool = True) -> int:
         "affine_candidate": AFFINE_PATH,
         "warp_candidate": WARP_PATH,
         "whs_label_affine_candidate": WHS_LABEL_AFFINE_PATH,
+        "whs_label_warp_candidate": WHS_LABEL_WARP_PATH,
         "active_ch03_asset": ACTIVE_PATH,
         "report_json": REPORT_JSON,
     }
@@ -1332,6 +1334,45 @@ def map_auto_warp_chunked(
     return out
 
 
+def map_auto_warp_chunked_nearest(
+    base: np.ndarray,
+    delta: np.ndarray,
+    source_ap: np.ndarray | None = None,
+    slice_scale: np.ndarray | None = None,
+    fixed_center: np.ndarray | None = None,
+    moving_center: np.ndarray | None = None,
+    chunk: int = 32,
+) -> np.ndarray:
+    out = np.zeros(TARGET_SHAPE, dtype=base.dtype)
+    si = np.arange(TARGET_SHAPE[1])
+    lr = np.arange(TARGET_SHAPE[2])
+    if source_ap is None:
+        source_ap = np.arange(TARGET_SHAPE[0], dtype=np.float32)
+    if slice_scale is None:
+        slice_scale = np.ones((TARGET_SHAPE[0], 2), dtype=np.float32)
+    if fixed_center is None:
+        fixed_center = np.column_stack([
+            np.arange(TARGET_SHAPE[0], dtype=np.float32) * 0 + (TARGET_SHAPE[1] - 1) / 2,
+            np.arange(TARGET_SHAPE[0], dtype=np.float32) * 0 + (TARGET_SHAPE[2] - 1) / 2,
+        ])
+    if moving_center is None:
+        moving_center = fixed_center - delta[:, 1:3]
+    for start in range(0, TARGET_SHAPE[0], chunk):
+        stop = min(start + chunk, TARGET_SHAPE[0])
+        ap = source_ap[start:stop]
+        coords = np.meshgrid(ap, si, lr, indexing="ij")
+        fc = fixed_center[start:stop]
+        mc = moving_center[start:stop]
+        sc = np.clip(slice_scale[start:stop], 0.80, 1.25)
+        sample = [
+            coords[0],
+            mc[:, 0, None, None] + (coords[1] - fc[:, 0, None, None]) / sc[:, 0, None, None],
+            mc[:, 1, None, None] + (coords[2] - fc[:, 1, None, None]) / sc[:, 1, None, None],
+        ]
+        out[start:stop] = ndimage.map_coordinates(base, sample, order=0, mode="constant", cval=0).astype(base.dtype)
+    return out
+
+
 
 def slice_bbox_size(mask2d: np.ndarray) -> tuple[float, float] | None:
     coords = np.argwhere(mask2d)
@@ -1348,6 +1389,75 @@ def slice_bbox_sizes(mask: np.ndarray) -> np.ndarray:
         if size is not None:
             sizes[ap] = size
     return sizes
+
+
+def label_mask_slice_warp_parameters(fixed_mask: np.ndarray, moving_mask: np.ndarray, factor: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    fixed_small = downsample_mask(fixed_mask, factor=factor)
+    moving_small = downsample_mask(moving_mask, factor=factor)
+    source_ap_small = ap_dtw_mapping(fixed_small, moving_small)
+    fixed_com = np.asarray([center_of_mass(fixed_small[i]) if fixed_small[i].any() else (np.nan, np.nan) for i in range(fixed_small.shape[0])])
+    moving_com = np.asarray([center_of_mass(moving_small[i]) if moving_small[i].any() else (np.nan, np.nan) for i in range(moving_small.shape[0])])
+    moving_valid = np.isfinite(moving_com[:, 0])
+    fixed_valid = np.isfinite(fixed_com[:, 0])
+    if fixed_valid.sum() < 8 or moving_valid.sum() < 8:
+        raise ValueError(f"Label-volume warp needs at least 8 AP slices with fixed and moving labels; fixed={int(fixed_valid.sum())}, moving={int(moving_valid.sum())}.")
+    moving_idx = np.flatnonzero(moving_valid)
+    fixed_idx = np.flatnonzero(fixed_valid)
+    mapped_moving_com = np.column_stack([
+        np.interp(source_ap_small, moving_idx, moving_com[moving_valid, axis])
+        for axis in range(2)
+    ])
+    delta_small = np.zeros((fixed_small.shape[0], 2), dtype=np.float32)
+    delta_small[fixed_valid] = fixed_com[fixed_valid] - mapped_moving_com[fixed_valid]
+    fixed_sizes = slice_bbox_sizes(fixed_small)
+    moving_sizes = slice_bbox_sizes(moving_small)
+    mapped_moving_sizes = np.column_stack([
+        np.interp(source_ap_small, moving_idx, moving_sizes[moving_valid, axis])
+        for axis in range(2)
+    ])
+    size_valid = fixed_valid & np.all(np.isfinite(fixed_sizes), axis=1)
+    scale_valid = size_valid & np.all(mapped_moving_sizes > 1, axis=1)
+    scale_small = np.ones((fixed_small.shape[0], 2), dtype=np.float32)
+    scale_small[scale_valid] = fixed_sizes[scale_valid] / mapped_moving_sizes[scale_valid]
+    fixed_com_filled = np.zeros_like(fixed_com, dtype=np.float32)
+    for axis in range(2):
+        fixed_com_filled[:, axis] = np.interp(np.arange(len(fixed_com)), fixed_idx, fixed_com[fixed_valid, axis])
+        delta_small[:, axis] = np.interp(np.arange(len(delta_small)), fixed_idx, delta_small[fixed_valid, axis])
+        delta_small[:, axis] = ndimage.gaussian_filter1d(delta_small[:, axis], sigma=2.0)
+        valid_scale_idx = np.flatnonzero(scale_valid)
+        if valid_scale_idx.size >= 2:
+            scale_small[:, axis] = np.interp(np.arange(len(scale_small)), valid_scale_idx, scale_small[scale_valid, axis])
+        scale_small[:, axis] = ndimage.gaussian_filter1d(np.clip(scale_small[:, axis], 0.80, 1.25), sigma=2.0)
+    ap_scale = TARGET_SHAPE[0] / fixed_small.shape[0]
+    si_scale = TARGET_SHAPE[1] / fixed_small.shape[1]
+    lr_scale = TARGET_SHAPE[2] / fixed_small.shape[2]
+    full_ap_index = np.arange(TARGET_SHAPE[0]) / ap_scale
+    source_ap = np.interp(full_ap_index, np.arange(fixed_small.shape[0]), source_ap_small) * ap_scale
+    delta = np.column_stack([
+        np.zeros(TARGET_SHAPE[0]),
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 0]) * si_scale,
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), delta_small[:, 1]) * lr_scale,
+    ])
+    fixed_center_full = np.column_stack([
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), fixed_com_filled[:, 0]) * si_scale,
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), fixed_com_filled[:, 1]) * lr_scale,
+    ])
+    moving_center_full = fixed_center_full - delta[:, 1:3]
+    slice_scale_full = np.column_stack([
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), scale_small[:, 0]),
+        np.interp(full_ap_index, np.arange(fixed_small.shape[0]), scale_small[:, 1]),
+    ])
+    metrics = {
+        "warp_downsample_factor": factor,
+        "fixed_valid_ap_slices": int(fixed_valid.sum()),
+        "moving_valid_ap_slices": int(moving_valid.sum()),
+        "slice_scale_si_lr_min": [float(slice_scale_full[:, 0].min()), float(slice_scale_full[:, 1].min())],
+        "slice_scale_si_lr_max": [float(slice_scale_full[:, 0].max()), float(slice_scale_full[:, 1].max())],
+        "ap_source_min_max": [float(source_ap.min()), float(source_ap.max())],
+        "ap_source_samples": [float(source_ap[i]) for i in np.linspace(0, TARGET_SHAPE[0] - 1, 9, dtype=int)],
+    }
+    return source_ap, delta, slice_scale_full, fixed_center_full, moving_center_full, metrics
+
 
 def ap_profile(mask: np.ndarray) -> np.ndarray:
     profile = mask.sum(axis=(1, 2)).astype(np.float64)
@@ -1669,6 +1779,39 @@ def run_labels_volume_affine() -> int:
     return 0
 
 
+def run_labels_volume_warp() -> int:
+    fixed_labels_path = find_annotation_path(required=True)
+    fixed_labels, fixed_orientation = orient_fixed_labels(tifffile.imread(fixed_labels_path), fixed_labels_path)
+    fixed_mask = fixed_labels > 0
+    if not WHS_LABEL_AFFINE_PATH.exists():
+        run_labels_volume_affine()
+    moved_affine = tifffile.imread(WHS_LABEL_AFFINE_PATH)
+    moving_mask = moved_affine > 0
+    factor = 8
+    source_ap, delta, slice_scale, fixed_center, moving_center, metrics = label_mask_slice_warp_parameters(fixed_mask, moving_mask, factor=factor)
+    warped_labels = map_auto_warp_chunked_nearest(
+        moved_affine,
+        delta,
+        source_ap=source_ap,
+        slice_scale=slice_scale,
+        fixed_center=fixed_center,
+        moving_center=moving_center,
+    )
+    write_tiff(WHS_LABEL_WARP_PATH, warped_labels.astype(np.uint16, copy=False))
+    qc_label_overlap_slices(warped_labels, fixed_labels, REPORT_DIR / "qc_label_volume_warp", "whs_labels_to_paxinos_warp")
+    write_json({"labels_volume_warp": {
+        "candidate": rel(WHS_LABEL_WARP_PATH),
+        "method": "affine_plus_ap_dtw_slice_center_scale_whs_labels_to_paxinos_labels",
+        "fixed_annotation": str(fixed_labels_path),
+        "moving_annotation_affine_candidate": rel(WHS_LABEL_AFFINE_PATH),
+        "fixed_orientation": fixed_orientation,
+        "qc_dir": rel(REPORT_DIR / "qc_label_volume_warp"),
+        "safety_note": "Diagnostic only; Paxinos annotation is not modified. This tests whether WHS labels can be aligned before applying any equivalent transform to Nissl.",
+        **metrics,
+    }})
+    return 0
+
+
 def run_affine() -> int:
     lm = read_landmarks(4); vol = load_oriented_source(); mat = affine_matrix(lm); out = apply_affine(vol, mat)
     write_tiff(AFFINE_PATH, out); qc_slices(out, REPORT_DIR / "qc_affine", "ch03_affine", lm)
@@ -1788,10 +1931,10 @@ def install_ch03() -> int:
 
 
 def reset() -> int:
-    for path in [AFFINE_PATH, WARP_PATH, WHS_LABEL_AFFINE_PATH, REPORT_JSON]:
+    for path in [AFFINE_PATH, WARP_PATH, WHS_LABEL_AFFINE_PATH, WHS_LABEL_WARP_PATH, REPORT_JSON]:
         if path.exists():
             path.unlink(); print(f"Removed {rel(path)}")
-    for folder in [REPORT_DIR / "qc_affine", REPORT_DIR / "qc_warp", REPORT_DIR / "qc_template", REPORT_DIR / "qc_label_volume"]:
+    for folder in [REPORT_DIR / "qc_affine", REPORT_DIR / "qc_warp", REPORT_DIR / "qc_template", REPORT_DIR / "qc_label_volume", REPORT_DIR / "qc_label_volume_warp"]:
         if folder.exists():
             shutil.rmtree(folder); print(f"Removed {rel(folder)}")
     print("Reset complete. Landmark CSV and accepted active Ch03 asset were left untouched.")
@@ -1801,7 +1944,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1834,6 +1977,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "bregma-init-affine": init_bregma_from_affine,
             "bregma-warp": run_bregma_warp,
             "labels-volume-affine": run_labels_volume_affine,
+            "labels-volume-warp": run_labels_volume_warp,
             "labels-affine": run_labels_affine,
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
