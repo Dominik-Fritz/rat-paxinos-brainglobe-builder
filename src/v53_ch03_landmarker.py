@@ -1514,6 +1514,7 @@ def build_label_landmarks(min_count: int = 12, max_count: int = 160) -> tuple[La
         "used_centroid_count": len(lm.names),
         "fixed_orientation": fixed_orientation,
         "affine_context": context,
+        "mask_affine_matrix_moving_to_fixed": mat.tolist(),
         "example_terms": lm.names[:25],
     }
     return lm, meta, source, fixed_mask, fixed_labels_path
@@ -1567,13 +1568,14 @@ def weighted_affine_from_points(moving: np.ndarray, fixed: np.ndarray, weights: 
 
 def run_labels_affine() -> int:
     lm, meta, source, fixed_mask, _ = build_label_landmarks()
-    mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    label_mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    mat = np.asarray(meta["mask_affine_matrix_moving_to_fixed"], dtype=np.float64)
     out = apply_affine(source, mat)
     write_tiff(AFFINE_PATH, out)
     qc_slices(out, REPORT_DIR / "qc_affine", "ch03_labels_affine")
     qc_overlay_slices(out, fixed_mask, REPORT_DIR / "qc_affine", "ch03_labels_affine")
     residual = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3] - lm.fixed
-    write_json({"labels_affine": {"candidate": rel(AFFINE_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine", "matrix_moving_to_fixed": mat.tolist(), "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **fit_metrics, **meta}})
+    write_json({"labels_affine": {"candidate": rel(AFFINE_PATH), "method": "mask_affine_with_whs_paxinos_label_centroid_audit", "matrix_moving_to_fixed": mat.tolist(), "label_centroid_bounded_axis_matrix_diagnostic": label_mat.tolist(), "label_centroid_bounded_axis_diagnostic": fit_metrics, "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **meta}})
     return 0
 
 
@@ -1583,20 +1585,22 @@ def run_labels_warp() -> int:
     # placement, but they are not reliable enough to drive a dense non-linear
     # TPS deformation. In real local tests, ambiguous cross-atlas correspondences
     # produced folded/tilted Ch03 volumes even with clipped displacement fields.
-    # Therefore this command now deliberately writes the bounded label-guided
-    # affine result to the "warp" candidate path, so downstream accept/install
-    # commands can still use the usual workflow without risking catastrophic
-    # local folding. Use explicit hand-picked landmarks for any later non-linear
-    # deformation.
+    # The label-centroid affine itself is also only diagnostic because real
+    # testing showed it can drive AP/SI/LR scales to the safety clip limits.
+    # Therefore this command writes the mask-based affine result to the "warp"
+    # candidate path, so downstream accept/install commands can still use the
+    # usual workflow without risking catastrophic local folding. Use explicit
+    # hand-picked landmarks for any later non-linear deformation.
     lm, meta, source, fixed_mask, _ = build_label_landmarks()
-    mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    label_mat, fit_metrics = bounded_axis_affine_from_points(lm.moving, lm.fixed, lm.weights)
+    mat = np.asarray(meta["mask_affine_matrix_moving_to_fixed"], dtype=np.float64)
     base = apply_affine(source, mat)
     aff_moving = (np.c_[lm.moving, np.ones(len(lm.moving))] @ mat.T)[:, :3]
     residual = aff_moving - lm.fixed
     write_tiff(WARP_PATH, base)
     qc_slices(base, REPORT_DIR / "qc_warp", "ch03_labels_warp_safe_affine")
     qc_overlay_slices(base, fixed_mask, REPORT_DIR / "qc_warp", "ch03_labels_warp_safe_affine")
-    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "matched_whs_paxinos_structure_centroid_bounded_axis_affine_only_no_tps_safety", "matrix_moving_to_fixed": mat.tolist(), "nonlinear_tps_disabled": True, "safety_note": "Automatic WHS/Paxinos label-name matches are not trusted for dense deformation; this command writes the bounded label-guided affine result to avoid folded Ch03 volumes.", "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **fit_metrics, **meta}})
+    write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "mask_affine_only_with_whs_paxinos_label_centroid_audit_no_tps_safety", "matrix_moving_to_fixed": mat.tolist(), "label_centroid_bounded_axis_matrix_diagnostic": label_mat.tolist(), "label_centroid_bounded_axis_diagnostic": fit_metrics, "nonlinear_tps_disabled": True, "safety_note": "Automatic WHS/Paxinos label-name centroids are audited but not trusted to set the transform; this command writes the mask-based affine result to avoid bad label-centroid scales or folded Ch03 volumes.", "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **meta}})
     return 0
 
 def run_affine() -> int:
