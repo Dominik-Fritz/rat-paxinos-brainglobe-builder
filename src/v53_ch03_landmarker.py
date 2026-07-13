@@ -39,6 +39,7 @@ WHS_ANNOTATION_PATH = Path(os.environ.get("V53_WHS_ANNOTATION", r"C:\Users\49152
 ACTIVE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference.tiff"
 AFFINE_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_affine.tiff"
 WARP_PATH = OPTIONAL_DIR / "waxholm_anatomy_reference_landmarks_warp.tiff"
+WHS_LABEL_AFFINE_PATH = OPTIONAL_DIR / "waxholm_annotation_labels_affine.tiff"
 ATLAS_CANDIDATES = [
     ROOT / "data" / "output" / "brainglobe_official_candidate" / "paxinos_watson_rat_40um",
     ROOT / "data" / "output" / "brainglobe_official_candidate" / "paxinos_watson_rat_40um_v1.0",
@@ -98,6 +99,7 @@ def status(exit_missing_ok: bool = True) -> int:
         "paxinos_annotation": find_annotation_path(required=False) or Path("<not found>"),
         "affine_candidate": AFFINE_PATH,
         "warp_candidate": WARP_PATH,
+        "whs_label_affine_candidate": WHS_LABEL_AFFINE_PATH,
         "active_ch03_asset": ACTIVE_PATH,
         "report_json": REPORT_JSON,
     }
@@ -1077,6 +1079,12 @@ def apply_affine(vol: np.ndarray, mat: np.ndarray) -> np.ndarray:
     return np.clip(out, np.iinfo(np.uint16).min, np.iinfo(np.uint16).max).astype(np.uint16)
 
 
+def apply_affine_nearest(vol: np.ndarray, mat: np.ndarray) -> np.ndarray:
+    inv = np.linalg.inv(mat)
+    out = ndimage.affine_transform(vol, inv[:3, :3], offset=inv[:3, 3], output_shape=TARGET_SHAPE, order=0, mode="constant", cval=0)
+    return out.astype(vol.dtype, copy=False)
+
+
 def write_tiff(path: Path, vol: np.ndarray) -> None:
     ensure_dirs(); tifffile.imwrite(path, vol, bigtiff=True)
     print(f"Wrote {rel(path)} shape={vol.shape} dtype={vol.dtype}")
@@ -1120,6 +1128,28 @@ def label_boundary_2d(labels2d: np.ndarray) -> np.ndarray:
     boundary[:, 1:] |= labels2d[:, :-1] != labels2d[:, 1:]
     boundary &= labels2d > 0
     return ndimage.binary_dilation(boundary, iterations=1)
+
+
+def qc_label_overlap_slices(moving_labels: np.ndarray, fixed_labels: np.ndarray, outdir: Path, prefix: str) -> None:
+    outdir.mkdir(parents=True, exist_ok=True)
+    for ap in np.linspace(60, TARGET_SHAPE[0] - 61, 6, dtype=int):
+        moving_mask = moving_labels[ap] > 0
+        fixed_mask = fixed_labels[ap] > 0
+        moving_boundary = label_boundary_2d(moving_labels[ap])
+        fixed_boundary = label_boundary_2d(fixed_labels[ap])
+        rgb = np.zeros((*moving_mask.shape, 3), dtype=np.float32)
+        rgb[..., 0] = fixed_mask.astype(np.float32) * 0.18
+        rgb[..., 1] = moving_mask.astype(np.float32) * 0.18
+        rgb[fixed_boundary, 0] = 1.0
+        rgb[moving_boundary, 1] = 1.0
+        rgb[fixed_boundary & moving_boundary] = (1.0, 1.0, 0.0)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.imshow(rgb)
+        ax.set_title(f"{prefix} AP {ap} red=Paxinos green=WHS labels yellow=overlap")
+        ax.set_axis_off()
+        fig.tight_layout()
+        fig.savefig(outdir / f"{prefix}_label_overlap_ap_{ap:03d}.png", dpi=120)
+        plt.close(fig)
 
 
 def fill_and_smooth_offsets(offsets: np.ndarray, valid: np.ndarray, sigma: float = 2.0) -> np.ndarray:
@@ -1603,6 +1633,42 @@ def run_labels_warp() -> int:
     write_json({"labels_warp": {"candidate": rel(WARP_PATH), "method": "mask_affine_only_with_whs_paxinos_label_centroid_audit_no_tps_safety", "matrix_moving_to_fixed": mat.tolist(), "label_centroid_bounded_axis_matrix_diagnostic": label_mat.tolist(), "label_centroid_bounded_axis_diagnostic": fit_metrics, "nonlinear_tps_disabled": True, "safety_note": "Automatic WHS/Paxinos label-name centroids are audited but not trusted to set the transform; this command writes the mask-based affine result to avoid bad label-centroid scales or folded Ch03 volumes.", "rms_error_voxels": float(np.sqrt(np.average(np.sum(residual ** 2, axis=1), weights=lm.weights))), **meta}})
     return 0
 
+
+def run_labels_volume_affine() -> int:
+    """Transform the WHS annotation itself into Paxinos space for label-vs-label QC.
+
+    This does not write or modify the Paxinos annotation. It is a diagnostic pass:
+    if the WHS label volume cannot be placed plausibly onto the Paxinos label
+    volume, then applying the same parameters to Nissl cannot yield a trustworthy
+    region-wise Ch03 result.
+    """
+    fixed_labels_path = find_annotation_path(required=True)
+    fixed_labels, fixed_orientation = orient_fixed_labels(tifffile.imread(fixed_labels_path), fixed_labels_path)
+    fixed_mask = fixed_labels > 0
+    if not WHS_ANNOTATION_PATH.exists():
+        raise FileNotFoundError(f"Missing WHS annotation for label-volume registration: {WHS_ANNOTATION_PATH}. Set V53_WHS_ANNOTATION if needed.")
+    _, mat, context = load_source_for_auto_affine_context(fixed_mask)
+    extra_flips = context.get("extra_flips_after_v53_orientation", [])
+    if not extra_flips and isinstance(context.get("source_orientation"), dict):
+        extra_flips = ((context["source_orientation"].get("selected") or {}).get("extra_flips_after_v53_orientation", []))
+    moving_labels = orient_moving_labels_like_source(tifffile.imread(WHS_ANNOTATION_PATH), extra_flips)
+    moved_labels = apply_affine_nearest(moving_labels, mat)
+    write_tiff(WHS_LABEL_AFFINE_PATH, moved_labels.astype(np.uint16, copy=False))
+    qc_label_overlap_slices(moved_labels, fixed_labels, REPORT_DIR / "qc_label_volume", "whs_labels_to_paxinos_affine")
+    write_json({"labels_volume_affine": {
+        "candidate": rel(WHS_LABEL_AFFINE_PATH),
+        "method": "transform_whs_annotation_to_paxinos_with_mask_affine_nearest_neighbor",
+        "fixed_annotation": str(fixed_labels_path),
+        "moving_annotation": str(WHS_ANNOTATION_PATH),
+        "fixed_orientation": fixed_orientation,
+        "affine_context": context,
+        "matrix_moving_to_fixed": mat.tolist(),
+        "qc_dir": rel(REPORT_DIR / "qc_label_volume"),
+        "safety_note": "Diagnostic only; Paxinos annotation is not modified. Green=WHS transformed labels, red=Paxinos labels.",
+    }})
+    return 0
+
+
 def run_affine() -> int:
     lm = read_landmarks(4); vol = load_oriented_source(); mat = affine_matrix(lm); out = apply_affine(vol, mat)
     write_tiff(AFFINE_PATH, out); qc_slices(out, REPORT_DIR / "qc_affine", "ch03_affine", lm)
@@ -1722,10 +1788,10 @@ def install_ch03() -> int:
 
 
 def reset() -> int:
-    for path in [AFFINE_PATH, WARP_PATH, REPORT_JSON]:
+    for path in [AFFINE_PATH, WARP_PATH, WHS_LABEL_AFFINE_PATH, REPORT_JSON]:
         if path.exists():
             path.unlink(); print(f"Removed {rel(path)}")
-    for folder in [REPORT_DIR / "qc_affine", REPORT_DIR / "qc_warp", REPORT_DIR / "qc_template"]:
+    for folder in [REPORT_DIR / "qc_affine", REPORT_DIR / "qc_warp", REPORT_DIR / "qc_template", REPORT_DIR / "qc_label_volume"]:
         if folder.exists():
             shutil.rmtree(folder); print(f"Removed {rel(folder)}")
     print("Reset complete. Landmark CSV and accepted active Ch03 asset were left untouched.")
@@ -1735,7 +1801,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -1767,6 +1833,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "bregma-template": create_bregma_template,
             "bregma-init-affine": init_bregma_from_affine,
             "bregma-warp": run_bregma_warp,
+            "labels-volume-affine": run_labels_volume_affine,
             "labels-affine": run_labels_affine,
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
