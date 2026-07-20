@@ -349,6 +349,68 @@ def automatic_affine_matrix(moving_volume: np.ndarray, fixed_mask: np.ndarray) -
     return mat, metrics
 
 
+
+
+def affine_matrix_from_masks(moving_mask: np.ndarray, fixed_mask: np.ndarray) -> tuple[np.ndarray, dict]:
+    f_min, f_max = bbox(fixed_mask)
+    m_min, m_max = bbox(moving_mask)
+    f_size = np.maximum(f_max - f_min, 1.0)
+    m_size = np.maximum(m_max - m_min, 1.0)
+    scale = np.clip(f_size / m_size, 0.60, 1.70)
+    f_com = center_of_mass(fixed_mask)
+    m_com = center_of_mass(moving_mask)
+    mat = np.eye(4)
+    mat[:3, :3] = np.diag(scale)
+    mat[:3, 3] = f_com - scale * m_com
+    metrics = {
+        "method": "label_mask_to_label_mask_bbox_com_affine",
+        "fixed_bbox_min": f_min.tolist(),
+        "fixed_bbox_max": f_max.tolist(),
+        "moving_bbox_min": m_min.tolist(),
+        "moving_bbox_max": m_max.tolist(),
+        "scale_ap_si_lr": scale.tolist(),
+        "fixed_center_of_mass": f_com.tolist(),
+        "moving_center_of_mass": m_com.tolist(),
+    }
+    return mat, metrics
+
+
+def scaled_affine_for_shape(mat: np.ndarray, full_shape: tuple[int, int, int], small_shape: tuple[int, int, int]) -> np.ndarray:
+    full = np.asarray(full_shape, dtype=np.float64)
+    small = np.asarray(small_shape, dtype=np.float64)
+    ratio = small / full
+    scaled = np.eye(4, dtype=np.float64)
+    scaled[:3, :3] = np.diag(ratio) @ mat[:3, :3] @ np.diag(1.0 / ratio)
+    scaled[:3, 3] = ratio * mat[:3, 3]
+    return scaled
+
+
+def mask_affine_dice_score(moving_mask: np.ndarray, fixed_mask: np.ndarray, mat: np.ndarray, factor: int = 8) -> dict:
+    fixed_small = downsample_mask(fixed_mask, factor=factor)
+    moving_small = downsample_mask(moving_mask, factor=factor)
+    small_mat = scaled_affine_for_shape(mat, TARGET_SHAPE, fixed_small.shape)
+    moved_small = apply_affine_nearest_shape(moving_small.astype(np.uint8), small_mat, fixed_small.shape).astype(bool)
+    intersection = int(np.logical_and(moved_small, fixed_small).sum())
+    moved_count = int(moved_small.sum())
+    fixed_count = int(fixed_small.sum())
+    dice = 2.0 * intersection / max(moved_count + fixed_count, 1)
+    return {"dice": float(dice), "intersection_voxels_small": intersection, "moving_voxels_small": moved_count, "fixed_voxels_small": fixed_count}
+
+
+def choose_best_label_volume_affine(raw_moving_labels: np.ndarray, fixed_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
+    trials = []
+    best = None
+    for axes in [(), (0,), (1,), (2,), (0, 1), (0, 2), (1, 2), (0, 1, 2)]:
+        moving_labels = orient_moving_labels_like_source(raw_moving_labels, axes)
+        moving_mask = moving_labels > 0
+        mat, metrics = affine_matrix_from_masks(moving_mask, fixed_mask)
+        score = mask_affine_dice_score(moving_mask, fixed_mask, mat, factor=8)
+        trial = {"extra_flips_after_v53_orientation": axes, **metrics, **score}
+        trials.append(trial)
+        if best is None or score["dice"] > best[0]["dice"]:
+            best = (trial, moving_labels, mat)
+    return best[1].astype(np.int32, copy=False), best[2], {"selected": best[0], "trials": trials}
+
 def read_structure_terms(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -1087,6 +1149,12 @@ def apply_affine_nearest(vol: np.ndarray, mat: np.ndarray) -> np.ndarray:
     return out.astype(vol.dtype, copy=False)
 
 
+def apply_affine_nearest_shape(vol: np.ndarray, mat: np.ndarray, output_shape: tuple[int, int, int]) -> np.ndarray:
+    inv = np.linalg.inv(mat)
+    out = ndimage.affine_transform(vol, inv[:3, :3], offset=inv[:3, 3], output_shape=output_shape, order=0, mode="constant", cval=0)
+    return out.astype(vol.dtype, copy=False)
+
+
 def write_tiff(path: Path, vol: np.ndarray) -> None:
     ensure_dirs(); tifffile.imwrite(path, vol, bigtiff=True)
     print(f"Wrote {rel(path)} shape={vol.shape} dtype={vol.dtype}")
@@ -1757,11 +1825,7 @@ def run_labels_volume_affine() -> int:
     fixed_mask = fixed_labels > 0
     if not WHS_ANNOTATION_PATH.exists():
         raise FileNotFoundError(f"Missing WHS annotation for label-volume registration: {WHS_ANNOTATION_PATH}. Set V53_WHS_ANNOTATION if needed.")
-    _, mat, context = load_source_for_auto_affine_context(fixed_mask)
-    extra_flips = context.get("extra_flips_after_v53_orientation", [])
-    if not extra_flips and isinstance(context.get("source_orientation"), dict):
-        extra_flips = ((context["source_orientation"].get("selected") or {}).get("extra_flips_after_v53_orientation", []))
-    moving_labels = orient_moving_labels_like_source(tifffile.imread(WHS_ANNOTATION_PATH), extra_flips)
+    moving_labels, mat, label_orientation = choose_best_label_volume_affine(tifffile.imread(WHS_ANNOTATION_PATH), fixed_mask)
     moved_labels = apply_affine_nearest(moving_labels, mat)
     write_tiff(WHS_LABEL_AFFINE_PATH, moved_labels.astype(np.uint16, copy=False))
     qc_label_overlap_slices(moved_labels, fixed_labels, REPORT_DIR / "qc_label_volume", "whs_labels_to_paxinos_affine")
@@ -1771,10 +1835,10 @@ def run_labels_volume_affine() -> int:
         "fixed_annotation": str(fixed_labels_path),
         "moving_annotation": str(WHS_ANNOTATION_PATH),
         "fixed_orientation": fixed_orientation,
-        "affine_context": context,
+        "label_orientation": label_orientation,
         "matrix_moving_to_fixed": mat.tolist(),
         "qc_dir": rel(REPORT_DIR / "qc_label_volume"),
-        "safety_note": "Diagnostic only; Paxinos annotation is not modified. Green=WHS transformed labels, red=Paxinos labels.",
+        "safety_note": "Diagnostic only; Paxinos annotation is not modified. Green=WHS transformed labels, red=Paxinos labels. Orientation and affine are selected from WHS-label-mask to Paxinos-label-mask overlap, not from Nissl intensity.",
     }})
     return 0
 
