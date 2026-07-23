@@ -1971,6 +1971,74 @@ def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> 
     }
 
 
+def uninstall_ch03() -> int:
+    """Remove only the optional Ch03 install artifacts from discovered Paxinos atlas folders.
+
+    This is the conservative finalization path when Ch03 QC is not good enough:
+    keep the stable Paxinos atlas, remove waxholm_anatomy_reference from atlas
+    metadata/additional_references, and leave annotation/structures untouched.
+    """
+    ensure_dirs()
+    target_name = "waxholm_anatomy_reference"
+    touched = []
+    for index, atlas_dir in enumerate(all_atlas_candidates(), start=1):
+        metadata_path = atlas_dir / "metadata.json"
+        if not metadata_path.exists():
+            continue
+        item = {"atlas_dir": str(atlas_dir), "removed_files": [], "metadata_updated": False, "metadata_backup": None}
+        for suffix in [".tiff", ".nii.gz"]:
+            path = atlas_dir / f"{target_name}{suffix}"
+            if path.exists():
+                path.unlink()
+                item["removed_files"].append(str(path))
+                print(f"Removed installed optional Ch03 file: {path}")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        changed = False
+        refs = metadata.get("additional_references", [])
+        if isinstance(refs, str):
+            refs = [refs]
+        if isinstance(refs, list) and target_name in refs:
+            refs = [r for r in refs if r != target_name]
+            metadata["additional_references"] = refs
+            changed = True
+        files = metadata.get("files")
+        if isinstance(files, dict):
+            for key in [f"{target_name}_tiff", f"{target_name}_nifti"]:
+                if key in files:
+                    del files[key]
+                    changed = True
+            metadata["files"] = files
+        if metadata.get("v53_optional_ch03"):
+            metadata["v53_optional_ch03"] = {
+                "installed": False,
+                "reference_name": target_name,
+                "note": "Optional experimental Ch03 removed by ch03-uninstall/finalize-stable because QC was not accepted as final.",
+            }
+            changed = True
+        if changed:
+            backup = REPORT_DIR / f"metadata_before_ch03_uninstall_{index}.json"
+            shutil.copy2(metadata_path, backup)
+            metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+            item["metadata_updated"] = True
+            item["metadata_backup"] = rel(backup)
+            print(f"Removed optional Ch03 metadata from: {metadata_path}")
+        if item["removed_files"] or item["metadata_updated"]:
+            touched.append(item)
+    write_json({"ch03_uninstall": {"target_count": len(touched), "targets": touched, "stable_finalization_note": "Paxinos annotation.tiff, annotation.nii.gz, and structures.json were not modified."}})
+    if not touched:
+        print("No installed optional Ch03 artifacts found. Stable atlas remains unchanged.")
+    else:
+        print("Optional Ch03 artifacts removed. Restart ABBA/Fiji before checking the stable atlas.")
+    return 0
+
+
+def finalize_stable() -> int:
+    """Finalize the realistic stable path by withdrawing Ch03 and reporting the stable atlas."""
+    result = uninstall_ch03()
+    print("Final decision recorded: Ch03 remains experimental; use the stable 3-channel Paxinos atlas as final.")
+    return result
+
+
 def install_ch03() -> int:
     if not ACTIVE_PATH.exists():
         raise FileNotFoundError(f"Active Ch03 asset is missing: {rel(ACTIVE_PATH)}. Run landmarks-accept affine/warp first.")
@@ -2008,7 +2076,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "ch03-install", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "ch03-install", "ch03-uninstall", "finalize-stable", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -2046,6 +2114,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
+            "ch03-uninstall": uninstall_ch03,
+            "finalize-stable": finalize_stable,
             "landmarks-reset": reset,
         }
         return commands.get(args.cmd, lambda: accept(args.kind))()
