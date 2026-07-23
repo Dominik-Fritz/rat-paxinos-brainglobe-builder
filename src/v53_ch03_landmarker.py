@@ -1972,6 +1972,30 @@ def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> 
 
 
 
+
+def export_whs_slices() -> int:
+    """Export the deterministically oriented WHS/Nissl reference as 39 µm AP slice TIFFs.
+
+    The slices are written in the same AP/SI/LR target convention used by the
+    Ch03 workflow so they can be inspected or used for manual ABBA/BigWarp-style
+    registration without modifying the stable Paxinos atlas.
+    """
+    vol = load_oriented_source().astype(np.uint16, copy=False)
+    outdir = OPTIONAL_DIR / "whs_nissl_slices_39um_ap"
+    if outdir.exists():
+        shutil.rmtree(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    manifest_lines = ["ap_index,filename"]
+    for ap in range(vol.shape[0]):
+        name = f"whs_nissl_ap_{ap:03d}.tiff"
+        tifffile.imwrite(outdir / name, vol[ap], bigtiff=False)
+        manifest_lines.append(f"{ap},{name}")
+    (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "note": "Slices are exported after deterministic V53 WHS orientation in AP/SI/LR order; each TIFF is one 39 µm AP plane."}})
+    print(f"Exported {vol.shape[0]} WHS/Nissl AP slices to: {rel(outdir)}")
+    print(f"Slice shape SI/LR: {vol.shape[1]} x {vol.shape[2]}")
+    return 0
+
 def import_active_ch03(source_path: str) -> int:
     """Import an externally registered Ch03 TIFF as the active optional Ch03 asset.
 
@@ -2100,7 +2124,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "ch03-install", "ch03-uninstall", "finalize-stable", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "export-whs-slices", "ch03-install", "ch03-uninstall", "finalize-stable", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -2138,6 +2162,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "labels-affine": run_labels_affine,
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
+            "export-whs-slices": export_whs_slices,
             "ch03-install": install_ch03,
             "ch03-import-active": lambda: import_active_ch03(args.source_tiff),
             "ch03-uninstall": uninstall_ch03,
