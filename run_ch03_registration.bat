@@ -28,6 +28,7 @@ if /I "%~1"=="labels-volume-warp" goto run
 if /I "%~1"=="labels-affine" goto run
 if /I "%~1"=="labels-warp" goto run
 if /I "%~1"=="ch03-install" goto run
+if /I "%~1"=="ch03-import-active" goto run
 if /I "%~1"=="ch03-uninstall" goto run
 if /I "%~1"=="finalize-stable" goto run
 if /I "%~1"=="landmarks-accept" goto run
@@ -64,6 +65,7 @@ echo   run_ch03_registration.bat labels-volume-warp
 echo   run_ch03_registration.bat labels-affine
 echo   run_ch03_registration.bat labels-warp
 echo   run_ch03_registration.bat ch03-install
+echo   run_ch03_registration.bat ch03-import-active PATH_TO_REGISTERED_TIFF
 echo   run_ch03_registration.bat ch03-uninstall
 echo   run_ch03_registration.bat finalize-stable
 echo   run_ch03_registration.bat landmarks-accept affine

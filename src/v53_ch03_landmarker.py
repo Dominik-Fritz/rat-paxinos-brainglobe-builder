@@ -1971,6 +1971,30 @@ def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> 
     }
 
 
+
+def import_active_ch03(source_path: str) -> int:
+    """Import an externally registered Ch03 TIFF as the active optional Ch03 asset.
+
+    This supports the manual ABBA/BigWarp-style workflow: register/export the
+    WHS/Nissl volume outside this script, then copy the final AP/SI/LR TIFF into
+    resources/optional_ch03/waxholm_anatomy_reference.tiff after strict shape
+    validation. The stable Paxinos annotation and structures are not modified.
+    """
+    src = Path(source_path).expanduser()
+    if not src.exists():
+        raise FileNotFoundError(f"Imported Ch03 TIFF is missing: {src}")
+    vol = tifffile.imread(src)
+    if tuple(vol.shape) != TARGET_SHAPE:
+        raise ValueError(f"Imported Ch03 TIFF has shape {vol.shape}; expected AP/SI/LR {TARGET_SHAPE}: {src}")
+    if not np.issubdtype(vol.dtype, np.integer):
+        vol = normalize_uint16(vol.astype(np.float32, copy=False))
+    ensure_dirs()
+    tifffile.imwrite(ACTIVE_PATH, vol.astype(np.uint16, copy=False), bigtiff=True)
+    qc_slices(vol.astype(np.uint16, copy=False), REPORT_DIR / "qc_imported_active", "ch03_imported_active")
+    write_json({"ch03_import_active": {"source": str(src), "active": rel(ACTIVE_PATH), "shape": list(vol.shape), "dtype": str(vol.dtype), "qc_dir": rel(REPORT_DIR / "qc_imported_active"), "note": "Externally registered Ch03 TIFF imported after strict AP/SI/LR shape validation; Paxinos annotation and structures were not modified."}})
+    print(f"Imported externally registered Ch03 TIFF as active asset: {rel(ACTIVE_PATH)}")
+    return 0
+
 def uninstall_ch03() -> int:
     """Remove only the optional Ch03 install artifacts from discovered Paxinos atlas folders.
 
@@ -2090,6 +2114,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     add.add_argument("weight", type=float, nargs="?", default=1.0)
     add.add_argument("--notes", default="")
     acc = sub.add_parser("landmarks-accept"); acc.add_argument("kind", choices=["affine", "warp"])
+    imp = sub.add_parser("ch03-import-active"); imp.add_argument("source_tiff")
     args = parser.parse_args(argv)
     try:
         commands = {
@@ -2114,6 +2139,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
             "ch03-install": install_ch03,
+            "ch03-import-active": lambda: import_active_ch03(args.source_tiff),
             "ch03-uninstall": uninstall_ch03,
             "finalize-stable": finalize_stable,
             "landmarks-reset": reset,
