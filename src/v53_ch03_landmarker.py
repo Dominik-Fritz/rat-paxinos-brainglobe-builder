@@ -24,9 +24,13 @@ from scipy.interpolate import RBFInterpolator
 from skimage import exposure, filters, transform
 from skimage.registration import optical_flow_tvl1, phase_cross_correlation
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+
+def get_pyplot():
+    """Load matplotlib only for commands that actually write PNG QC figures."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt
 
 ROOT = Path(__file__).resolve().parents[1]
 OPTIONAL_DIR = ROOT / "resources" / "optional_ch03"
@@ -638,6 +642,7 @@ def qc_coordinate_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, 
     target/current coordinates without sharing CSV files.
     """
     outdir.mkdir(parents=True, exist_ok=True)
+    plt = get_pyplot()
     aps = np.linspace(40, TARGET_SHAPE[0] - 41, 10, dtype=int)
     for ap in aps:
         img = exposure.rescale_intensity(vol[ap], out_range=(0, 1))
@@ -1162,6 +1167,7 @@ def write_tiff(path: Path, vol: np.ndarray) -> None:
 
 def qc_slices(vol: np.ndarray, outdir: Path, prefix: str, lm: LandmarkSet | None = None) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+    plt = get_pyplot()
     for ap in np.linspace(60, TARGET_SHAPE[0] - 61, 6, dtype=int):
         img = exposure.rescale_intensity(vol[ap], out_range=(0, 1))
         fig, ax = plt.subplots(figsize=(6, 5)); ax.imshow(img, cmap="gray"); ax.set_title(f"{prefix} AP {ap}")
@@ -1173,6 +1179,7 @@ def qc_slices(vol: np.ndarray, outdir: Path, prefix: str, lm: LandmarkSet | None
 
 def qc_overlay_slices(vol: np.ndarray, fixed_mask: np.ndarray, outdir: Path, prefix: str) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+    plt = get_pyplot()
     for ap in np.linspace(60, TARGET_SHAPE[0] - 61, 6, dtype=int):
         img = exposure.rescale_intensity(vol[ap], out_range=(0, 1))
         mask2d = fixed_mask[ap]
@@ -1202,6 +1209,7 @@ def label_boundary_2d(labels2d: np.ndarray) -> np.ndarray:
 
 def qc_label_overlap_slices(moving_labels: np.ndarray, fixed_labels: np.ndarray, outdir: Path, prefix: str) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+    plt = get_pyplot()
     for ap in np.linspace(60, TARGET_SHAPE[0] - 61, 6, dtype=int):
         moving_mask = moving_labels[ap] > 0
         fixed_mask = fixed_labels[ap] > 0
