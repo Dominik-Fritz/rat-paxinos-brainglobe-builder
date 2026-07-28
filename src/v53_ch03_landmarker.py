@@ -1993,15 +1993,22 @@ def export_whs_slices() -> int:
     if outdir.exists():
         shutil.rmtree(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    manifest_lines = ["ap_index,filename"]
-    for ap in range(vol.shape[0]):
-        name = f"whs_nissl_ap_{ap:03d}.tiff"
-        tifffile.imwrite(outdir / name, vol[ap], bigtiff=False)
-        manifest_lines.append(f"{ap},{name}")
+    # The oriented WHS array runs caudal -> rostral, whereas the Paxinos target
+    # index runs rostral -> caudal (target AP 0 is anterior).  Export in target
+    # order so an alphabetically/numerically stacked ABBA result cannot silently
+    # become AP-reversed.  Keep the original source index in the manifest for a
+    # complete audit trail.
+    manifest_lines = ["target_ap_index,source_oriented_ap_index,filename"]
+    for target_ap in range(vol.shape[0]):
+        source_ap = vol.shape[0] - 1 - target_ap
+        name = f"whs_nissl_ap_{target_ap:03d}.tiff"
+        tifffile.imwrite(outdir / name, vol[source_ap], bigtiff=False)
+        manifest_lines.append(f"{target_ap},{source_ap},{name}")
     (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
-    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "note": "Slices are exported after deterministic V53 WHS orientation in AP/SI/LR order; each TIFF is one 39 µm AP plane."}})
+    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "export_ap_direction": "filename AP 000 is rostral/anterior; filename AP 607 is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - target_ap_index", "note": "Slices are exported in Paxinos target AP order after deterministic V53 WHS orientation; each TIFF is one 39 µm AP plane."}})
     print(f"Exported {vol.shape[0]} WHS/Nissl AP slices to: {rel(outdir)}")
     print(f"Slice shape SI/LR: {vol.shape[1]} x {vol.shape[2]}")
+    print(f"AP direction: {outdir.name}\\whs_nissl_ap_000.tiff is anterior; whs_nissl_ap_{vol.shape[0] - 1:03d}.tiff is posterior")
     return 0
 
 def import_active_ch03(source_path: str) -> int:
