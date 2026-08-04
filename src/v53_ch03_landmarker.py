@@ -1982,11 +1982,13 @@ def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> 
 
 
 def export_whs_slices() -> int:
-    """Export the deterministically oriented WHS/Nissl reference as 39 µm AP slice TIFFs.
+    """Export WHS/Nissl as Paxinos-target-indexed AP slice TIFFs.
 
-    The slices are written in the same AP/SI/LR target convention used by the
-    Ch03 workflow so they can be inspected or used for manual ABBA/BigWarp-style
-    registration without modifying the stable Paxinos atlas.
+    The WHS source atlas has 39 µm voxels, but ``load_oriented_source`` resamples
+    it onto the 608-plane Paxinos target index grid.  Consequently these exported
+    planes should be imported into the 40 µm Paxinos ABBA atlas with a 0.040 mm
+    axis increment, not 0.039 mm.  This makes filename AP N coincide with target
+    AP index N before a common whole-series AP translation is applied.
     """
     vol = load_oriented_source().astype(np.uint16, copy=False)
     outdir = OPTIONAL_DIR / "whs_nissl_slices_39um_ap"
@@ -2005,10 +2007,11 @@ def export_whs_slices() -> int:
         tifffile.imwrite(outdir / name, vol[source_ap], bigtiff=False)
         manifest_lines.append(f"{target_ap},{source_ap},{name}")
     (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
-    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "export_ap_direction": "filename AP 000 is rostral/anterior; filename AP 607 is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - target_ap_index", "note": "Slices are exported in Paxinos target AP order after deterministic V53 WHS orientation; each TIFF is one 39 µm AP plane."}})
+    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "source_voxel_size_mm": 0.039, "recommended_abba_axis_increment_mm": 0.040, "export_ap_direction": "filename AP 000 is rostral/anterior; filename AP 607 is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - target_ap_index", "note": "The 39 um WHS source was resampled to the 608-plane Paxinos target index grid before export. Import these target-indexed planes into the 40 um Paxinos ABBA atlas with +0.040 mm axis increment."}})
     print(f"Exported {vol.shape[0]} WHS/Nissl AP slices to: {rel(outdir)}")
     print(f"Slice shape SI/LR: {vol.shape[1]} x {vol.shape[2]}")
     print(f"AP direction: {outdir.name}\\whs_nissl_ap_000.tiff is anterior; whs_nissl_ap_{vol.shape[0] - 1:03d}.tiff is posterior")
+    print("Recommended ABBA axis increment: +0.040 mm (export is Paxinos-target-indexed; WHS source voxel size was 0.039 mm)")
     return 0
 
 def import_active_ch03(source_path: str) -> int:
