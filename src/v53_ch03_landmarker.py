@@ -175,7 +175,8 @@ def create_bregma_template() -> int:
     write_json({"bregma_template": {"csv": rel(BREGMA_CSV_PATH)}})
     return 0
 
-def load_oriented_source() -> np.ndarray:
+def load_native_oriented_source() -> np.ndarray:
+    """Load the native 39 µm WHS volume with orientation only, without resizing."""
     if not SOURCE_PATH.exists():
         raise FileNotFoundError(f"Missing WHS/Nissl source: {SOURCE_PATH}. This command requires local WHS data and will not download it.")
     vol = tifffile.imread(SOURCE_PATH)
@@ -185,6 +186,12 @@ def load_oriented_source() -> np.ndarray:
     vol = np.rot90(vol, k=PRE_RESIZE_ROT90, axes=(1, 2))
     for axis in TARGET_FLIPS:
         vol = np.flip(vol, axis=axis)
+    return vol.astype(np.float32, copy=False)
+
+
+def load_oriented_source() -> np.ndarray:
+    """Load WHS and resample it to the Paxinos target grid for 3D workflows."""
+    vol = load_native_oriented_source()
     if vol.shape != TARGET_SHAPE:
         vol = transform.resize(vol, TARGET_SHAPE, order=1, preserve_range=True, anti_aliasing=True).astype(np.float32)
     return vol.astype(np.float32, copy=False)
@@ -1982,15 +1989,13 @@ def install_one_ch03_target(atlas_dir: Path, index: int, active: np.ndarray) -> 
 
 
 def export_whs_slices() -> int:
-    """Export WHS/Nissl as Paxinos-target-indexed AP slice TIFFs.
+    """Export native WHS/Nissl 39 µm AP planes without spatial resampling.
 
-    The WHS source atlas has 39 µm voxels, but ``load_oriented_source`` resamples
-    it onto the 608-plane Paxinos target index grid.  Consequently these exported
-    planes should be imported into the 40 µm Paxinos ABBA atlas with a 0.040 mm
-    axis increment, not 0.039 mm.  This makes filename AP N coincide with target
-    AP index N before a common whole-series AP translation is applied.
+    Only deterministic axis orientation is applied.  ABBA receives the original
+    number and in-plane shape of WHS planes and must place them at +0.039 mm.  ABBA
+    is then responsible for registration/resampling into the 40 µm Paxinos atlas.
     """
-    vol = load_oriented_source().astype(np.uint16, copy=False)
+    vol = load_native_oriented_source().astype(np.uint16, copy=False)
     outdir = OPTIONAL_DIR / "whs_nissl_slices_39um_ap"
     if outdir.exists():
         shutil.rmtree(outdir)
@@ -2000,18 +2005,19 @@ def export_whs_slices() -> int:
     # order so an alphabetically/numerically stacked ABBA result cannot silently
     # become AP-reversed.  Keep the original source index in the manifest for a
     # complete audit trail.
-    manifest_lines = ["target_ap_index,source_oriented_ap_index,recommended_axis_offset_mm,filename"]
-    for target_ap in range(vol.shape[0]):
-        source_ap = vol.shape[0] - 1 - target_ap
-        name = f"whs_nissl_ap_{target_ap:03d}.tiff"
+    manifest_lines = ["export_ap_index,source_oriented_ap_index,recommended_axis_offset_mm,filename"]
+    for export_ap in range(vol.shape[0]):
+        source_ap = vol.shape[0] - 1 - export_ap
+        name = f"whs_nissl_ap_{export_ap:03d}.tiff"
         tifffile.imwrite(outdir / name, vol[source_ap], bigtiff=False)
-        manifest_lines.append(f"{target_ap},{source_ap},{target_ap * 0.040:.3f},{name}")
+        manifest_lines.append(f"{export_ap},{source_ap},{export_ap * 0.039:.3f},{name}")
     (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
-    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "orientation": {"perm": list(PERM), "pre_resize_rot90": PRE_RESIZE_ROT90, "target_flips": list(TARGET_FLIPS)}, "source_voxel_size_mm": 0.039, "recommended_abba_axis_increment_mm": 0.040, "axis_increment_embedded_in_slice_tiffs": False, "axis_position_note": "The TIFFs are plain 2D pixel planes. ABBA/QuPath must assign the +0.040 mm increment during import; add one common start offset to move the whole series.", "export_ap_direction": "filename AP 000 is rostral/anterior; filename AP 607 is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - target_ap_index", "note": "The 39 um WHS source was resampled to the 608-plane Paxinos target index grid before export. Import these target-indexed planes into the 40 um Paxinos ABBA atlas with +0.040 mm axis increment."}})
+    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "native_shape_ap_si_lr": [int(v) for v in vol.shape], "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "spatial_resampling_applied": False, "orientation_only": {"perm": list(PERM), "rot90": PRE_RESIZE_ROT90, "flips": list(TARGET_FLIPS)}, "source_voxel_size_mm": 0.039, "recommended_abba_axis_increment_mm": 0.039, "axis_increment_embedded_in_slice_tiffs": False, "axis_position_note": "The TIFFs are plain native-resolution 2D planes. ABBA/QuPath must assign the +0.039 mm increment during import; add one common start offset to move the whole series.", "export_ap_direction": "filename AP 000 is rostral/anterior; the highest filename AP index is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - export_ap_index", "note": "No resize or spatial resampling is applied. ABBA must register the native 39 um WHS series into the 40 um Paxinos target atlas."}})
     print(f"Exported {vol.shape[0]} WHS/Nissl AP slices to: {rel(outdir)}")
     print(f"Slice shape SI/LR: {vol.shape[1]} x {vol.shape[2]}")
     print(f"AP direction: {outdir.name}\\whs_nissl_ap_000.tiff is anterior; whs_nissl_ap_{vol.shape[0] - 1:03d}.tiff is posterior")
-    print("Recommended ABBA axis increment: +0.040 mm (export is Paxinos-target-indexed; WHS source voxel size was 0.039 mm)")
+    print("Spatial resampling: NONE (native WHS plane count and in-plane shape preserved)")
+    print("Recommended ABBA axis increment: +0.039 mm")
     print("IMPORTANT: axis positions are not embedded in the 2D TIFFs; ABBA/QuPath must assign the increment during import. See manifest.csv for expected relative offsets.")
     return 0
 
