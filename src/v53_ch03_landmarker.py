@@ -2005,17 +2005,18 @@ def export_whs_slices() -> int:
     # order so an alphabetically/numerically stacked ABBA result cannot silently
     # become AP-reversed.  Keep the original source index in the manifest for a
     # complete audit trail.
+    index_width = max(3, len(str(vol.shape[0] - 1)))
     manifest_lines = ["export_ap_index,source_oriented_ap_index,recommended_axis_offset_mm,filename"]
     for export_ap in range(vol.shape[0]):
         source_ap = vol.shape[0] - 1 - export_ap
-        name = f"whs_nissl_ap_{export_ap:03d}.tiff"
+        name = f"whs_nissl_ap_{export_ap:0{index_width}d}.tiff"
         tifffile.imwrite(outdir / name, vol[source_ap], bigtiff=False)
         manifest_lines.append(f"{export_ap},{source_ap},{export_ap * 0.039:.3f},{name}")
     (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
-    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "native_shape_ap_si_lr": [int(v) for v in vol.shape], "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "spatial_resampling_applied": False, "orientation_only": {"perm": list(PERM), "rot90": PRE_RESIZE_ROT90, "flips": list(TARGET_FLIPS)}, "source_voxel_size_mm": 0.039, "recommended_abba_axis_increment_mm": 0.039, "axis_increment_embedded_in_slice_tiffs": False, "axis_position_note": "The TIFFs are plain native-resolution 2D planes. ABBA/QuPath must assign the +0.039 mm increment during import; add one common start offset to move the whole series.", "export_ap_direction": "filename AP 000 is rostral/anterior; the highest filename AP index is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - export_ap_index", "note": "No resize or spatial resampling is applied. ABBA must register the native 39 um WHS series into the 40 um Paxinos target atlas."}})
+    write_json({"export_whs_slices": {"source": str(SOURCE_PATH), "outdir": rel(outdir), "native_shape_ap_si_lr": [int(v) for v in vol.shape], "slice_count": int(vol.shape[0]), "slice_shape_si_lr": [int(vol.shape[1]), int(vol.shape[2])], "filename_index_width": index_width, "spatial_resampling_applied": False, "orientation_only": {"perm": list(PERM), "rot90": PRE_RESIZE_ROT90, "flips": list(TARGET_FLIPS)}, "source_voxel_size_mm": 0.039, "recommended_abba_axis_increment_mm": 0.039, "axis_increment_embedded_in_slice_tiffs": False, "axis_position_note": "The TIFFs are plain native-resolution 2D planes. ABBA/QuPath must assign the +0.039 mm increment during import; add one common start offset to move the whole series.", "export_ap_direction": "the lowest filename AP index is rostral/anterior; the highest filename AP index is caudal/posterior", "source_ap_mapping": "source_oriented_ap_index = slice_count - 1 - export_ap_index", "note": "No resize or spatial resampling is applied. ABBA must register the native 39 um WHS series into the 40 um Paxinos target atlas."}})
     print(f"Exported {vol.shape[0]} WHS/Nissl AP slices to: {rel(outdir)}")
     print(f"Slice shape SI/LR: {vol.shape[1]} x {vol.shape[2]}")
-    print(f"AP direction: {outdir.name}\\whs_nissl_ap_000.tiff is anterior; whs_nissl_ap_{vol.shape[0] - 1:03d}.tiff is posterior")
+    print(f"AP direction: whs_nissl_ap_{0:0{index_width}d}.tiff is anterior; whs_nissl_ap_{vol.shape[0] - 1:0{index_width}d}.tiff is posterior")
     print("Spatial resampling: NONE (native WHS plane count and in-plane shape preserved)")
     print("Recommended ABBA axis increment: +0.039 mm")
     print("IMPORTANT: axis positions are not embedded in the 2D TIFFs; ABBA/QuPath must assign the increment during import. See manifest.csv for expected relative offsets.")
