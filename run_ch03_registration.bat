@@ -28,6 +28,7 @@ if /I "%~1"=="labels-volume-warp" goto run
 if /I "%~1"=="labels-affine" goto run
 if /I "%~1"=="labels-warp" goto run
 if /I "%~1"=="export-whs-slices" goto run
+if /I "%~1"=="export-whs-paxinos-slices" goto run
 if /I "%~1"=="ch03-install" goto run
 if /I "%~1"=="ch03-import-active" goto run
 if /I "%~1"=="ch03-uninstall" goto run
@@ -66,6 +67,7 @@ echo   run_ch03_registration.bat labels-volume-warp
 echo   run_ch03_registration.bat labels-affine
 echo   run_ch03_registration.bat labels-warp
 echo   run_ch03_registration.bat export-whs-slices
+echo   run_ch03_registration.bat export-whs-paxinos-slices
 echo   run_ch03_registration.bat ch03-install
 echo   run_ch03_registration.bat ch03-import-active PATH_TO_REGISTERED_TIFF
 echo   run_ch03_registration.bat ch03-uninstall

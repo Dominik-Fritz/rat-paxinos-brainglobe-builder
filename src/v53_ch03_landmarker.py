@@ -2022,6 +2022,83 @@ def export_whs_slices() -> int:
     print("IMPORTANT: axis positions are not embedded in the 2D TIFFs; ABBA/QuPath must assign the increment during import. See manifest.csv for expected relative offsets.")
     return 0
 
+
+def export_whs_paxinos_slices() -> int:
+    """Export one 40 µm WHS/Nissl plane per non-empty Paxinos AP plane.
+
+    Completely black anterior/posterior WHS planes are excluded. The remaining
+    native 39 µm AP span is sampled to exactly the contiguous AP range in which
+    the Paxinos annotation contains labels. In-plane WHS pixels are not resized.
+    """
+    source = load_native_oriented_source()[::-1].astype(np.float32, copy=False)
+    source_valid = np.flatnonzero(np.any(source != 0, axis=(1, 2)))
+    if source_valid.size == 0:
+        raise ValueError("Native WHS/Nissl source contains no non-black AP planes.")
+
+    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
+    fixed_valid = np.flatnonzero(np.any(fixed_mask, axis=(1, 2)))
+    if fixed_valid.size == 0:
+        raise ValueError(f"Paxinos annotation contains no labeled AP planes: {annotation_path}")
+    if fixed_valid.size > 1 and np.any(np.diff(fixed_valid) != 1):
+        raise ValueError(
+            "Paxinos labeled AP planes are not contiguous; a single 40 um ABBA "
+            "series cannot represent them without explicit gaps."
+        )
+
+    source_ap = np.linspace(
+        float(source_valid[0]), float(source_valid[-1]), fixed_valid.size, dtype=np.float64
+    )
+    outdir = OPTIONAL_DIR / "whs_nissl_slices_paxinos_40um_ap"
+    if outdir.exists():
+        shutil.rmtree(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    index_width = max(3, len(str(int(fixed_valid[-1]))))
+    manifest_lines = [
+        "series_index,paxinos_ap_index,paxinos_axis_offset_mm,source_native_ap_float,filename"
+    ]
+    for series_index, (fixed_ap, moving_ap) in enumerate(zip(fixed_valid, source_ap)):
+        lo = int(np.floor(moving_ap))
+        hi = int(np.ceil(moving_ap))
+        alpha = np.float32(moving_ap - lo)
+        image = source[lo] if lo == hi else source[lo] * (1.0 - alpha) + source[hi] * alpha
+        image = np.clip(image, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+        if not np.any(image):
+            raise ValueError(
+                f"AP resampling produced a completely black Nissl image for Paxinos AP {int(fixed_ap)}."
+            )
+        name = f"whs_nissl_paxinos_ap_{int(fixed_ap):0{index_width}d}.tiff"
+        tifffile.imwrite(outdir / name, image, bigtiff=False)
+        manifest_lines.append(
+            f"{series_index},{int(fixed_ap)},{float(fixed_ap) * 0.040:.3f},{moving_ap:.6f},{name}"
+        )
+    (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
+    write_json({"export_whs_paxinos_slices": {
+        "source": str(SOURCE_PATH),
+        "paxinos_annotation": str(annotation_path),
+        "fixed_orientation": fixed_orientation,
+        "outdir": rel(outdir),
+        "method": "crop_black_native_whs_ends_then_linear_ap_resample_to_nonempty_paxinos_label_range",
+        "source_native_shape_ap_si_lr": [int(v) for v in source.shape],
+        "source_nonblack_ap_min_max": [int(source_valid[0]), int(source_valid[-1])],
+        "source_nonblack_plane_count": int(source_valid.size),
+        "paxinos_labeled_ap_min_max": [int(fixed_valid[0]), int(fixed_valid[-1])],
+        "exported_plane_count": int(fixed_valid.size),
+        "exported_slice_shape_si_lr": [int(source.shape[1]), int(source.shape[2])],
+        "output_spacing_mm": 0.040,
+        "in_plane_spatial_resampling_applied": False,
+        "ap_resampling_applied": True,
+        "all_exported_planes_nonblack": True,
+        "note": "One non-black Nissl image is exported for every contiguous Paxinos AP plane containing labels. Filenames carry the actual Paxinos AP index; ABBA should import the series at +0.040 mm.",
+    }})
+    print(f"Exported {fixed_valid.size} WHS/Nissl images to: {rel(outdir)}")
+    print(f"Paxinos labeled AP range: {int(fixed_valid[0])}-{int(fixed_valid[-1])}")
+    print(f"Native WHS non-black AP range after orientation: {int(source_valid[0])}-{int(source_valid[-1])}")
+    print("AP resampling: native 39 um WHS span -> one plane per labeled 40 um Paxinos AP index")
+    print("In-plane resampling: NONE (ABBA performs the remaining 2D registration)")
+    print("Recommended ABBA axis increment: +0.040 mm")
+    return 0
+
+
 def import_active_ch03(source_path: str) -> int:
     """Import an externally registered Ch03 TIFF as the active optional Ch03 asset.
 
@@ -2150,7 +2227,7 @@ def reset() -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="V53 Ch03 landmark-guided registration")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "export-whs-slices", "ch03-install", "ch03-uninstall", "finalize-stable", "landmarks-reset"]:
+    for name in ["landmarks-status", "landmarks-template", "landmarks-affine", "landmarks-warp", "auto-affine", "auto-warp", "auto-micro-warp", "region-template", "region-qc", "region-list", "region-warp", "auto-region-warp", "bregma-template", "bregma-init-affine", "bregma-warp", "labels-volume-affine", "labels-volume-warp", "labels-affine", "labels-warp", "export-whs-slices", "export-whs-paxinos-slices", "ch03-install", "ch03-uninstall", "finalize-stable", "landmarks-reset"]:
         sub.add_parser(name)
     add = sub.add_parser("region-add")
     add.add_argument("name")
@@ -2189,6 +2266,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "labels-warp": run_labels_warp,
             "region-add": lambda: append_region_correction(args),
             "export-whs-slices": export_whs_slices,
+            "export-whs-paxinos-slices": export_whs_paxinos_slices,
             "ch03-install": install_ch03,
             "ch03-import-active": lambda: import_active_ch03(args.source_tiff),
             "ch03-uninstall": uninstall_ch03,
