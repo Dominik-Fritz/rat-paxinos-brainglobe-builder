@@ -2024,17 +2024,18 @@ def export_whs_slices() -> int:
 
 
 def export_whs_paxinos_slices() -> int:
-    """Export one 40 µm WHS/Nissl plane per non-empty Paxinos AP plane.
+    """Export the complete WHS/Nissl AP extent on a regular 40 µm grid.
 
-    Completely black anterior/posterior WHS planes are excluded. The remaining
-    native 39 µm AP span is sampled to exactly the contiguous AP range in which
-    the Paxinos annotation contains labels. In-plane WHS pixels are not resized.
+    No anterior or posterior planes are discarded, including completely black
+    planes.  The native 39 µm AP axis is sampled every 40 µm across its full
+    physical extent. In-plane WHS pixels are not resized. The images are written
+    as display-safe 8-bit TIFFs because ABBA/BigDataViewer commonly opens raw
+    16-bit bright-field exports with an unsuitable 8-bit display range.
     """
     source = load_native_oriented_source()[::-1].astype(np.float32, copy=False)
-    source_valid = np.flatnonzero(np.any(source != 0, axis=(1, 2)))
-    if source_valid.size == 0:
+    if source.shape[0] == 0 or not np.any(source):
         raise ValueError("Native WHS/Nissl source contains no non-black AP planes.")
-    intensity_view = source[source_valid[0] : source_valid[-1] + 1].reshape(-1)
+    intensity_view = source.reshape(-1)
     sample_step = max(1, intensity_view.size // 2_000_000)
     intensity_sample = intensity_view[::sample_step]
     intensity_sample = intensity_sample[intensity_sample > 0]
@@ -2047,41 +2048,31 @@ def export_whs_paxinos_slices() -> int:
     if intensity_high <= intensity_low:
         raise ValueError("Native WHS/Nissl source has no usable intensity range for registration images.")
 
-    fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
-    fixed_valid = np.flatnonzero(np.any(fixed_mask, axis=(1, 2)))
-    if fixed_valid.size == 0:
-        raise ValueError(f"Paxinos annotation contains no labeled AP planes: {annotation_path}")
-    if fixed_valid.size > 1 and np.any(np.diff(fixed_valid) != 1):
-        raise ValueError(
-            "Paxinos labeled AP planes are not contiguous; a single 40 um ABBA "
-            "series cannot represent them without explicit gaps."
-        )
-
-    source_ap = np.linspace(
-        float(source_valid[0]), float(source_valid[-1]), fixed_valid.size, dtype=np.float64
-    )
+    # Preserve the complete physical AP extent.  A 40 µm output plane at
+    # position x samples the native 39 µm volume at x / 39 µm.  Do not use
+    # the non-black range or the Paxinos label range to shorten the series.
+    source_ap = np.arange(
+        int(np.floor((source.shape[0] - 1) * 39.0 / 40.0)) + 1,
+        dtype=np.float64,
+    ) * (40.0 / 39.0)
     outdir = OPTIONAL_DIR / "whs_nissl_slices_paxinos_40um_ap"
     if outdir.exists():
         shutil.rmtree(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    index_width = max(3, len(str(int(fixed_valid[-1]))))
+    index_width = max(3, len(str(int(source_ap.size - 1))))
     manifest_lines = [
-        "series_index,paxinos_ap_index,paxinos_axis_offset_mm,source_native_ap_float,filename"
+        "series_index,axis_offset_mm,source_native_ap_float,filename"
     ]
-    for series_index, (fixed_ap, moving_ap) in enumerate(zip(fixed_valid, source_ap)):
+    for series_index, moving_ap in enumerate(source_ap):
         lo = int(np.floor(moving_ap))
         hi = int(np.ceil(moving_ap))
         alpha = np.float32(moving_ap - lo)
         image = source[lo] if lo == hi else source[lo] * (1.0 - alpha) + source[hi] * alpha
         positive = image > 0
         normalized = np.clip((image - intensity_low) / (intensity_high - intensity_low), 0.0, 1.0)
-        image = np.zeros(image.shape, dtype=np.uint16)
-        image[positive] = 1 + np.round(normalized[positive] * (np.iinfo(np.uint16).max - 1)).astype(np.uint16)
-        if not np.any(image):
-            raise ValueError(
-                f"AP resampling produced a completely black Nissl image for Paxinos AP {int(fixed_ap)}."
-            )
-        name = f"whs_nissl_paxinos_ap_{int(fixed_ap):0{index_width}d}.tiff"
+        image = np.zeros(image.shape, dtype=np.uint8)
+        image[positive] = 1 + np.round(normalized[positive] * 254.0).astype(np.uint8)
+        name = f"whs_nissl_40um_ap_{series_index:0{index_width}d}.tiff"
         tifffile.imwrite(
             outdir / name,
             image,
@@ -2099,38 +2090,36 @@ def export_whs_paxinos_slices() -> int:
             },
         )
         manifest_lines.append(
-            f"{series_index},{int(fixed_ap)},{float(fixed_ap) * 0.040:.3f},{moving_ap:.6f},{name}"
+            f"{series_index},{series_index * 0.040:.3f},{moving_ap:.6f},{name}"
         )
     (outdir / "manifest.csv").write_text("\n".join(manifest_lines) + "\n", encoding="utf-8")
     write_json({"export_whs_paxinos_slices": {
         "source": str(SOURCE_PATH),
-        "paxinos_annotation": str(annotation_path),
-        "fixed_orientation": fixed_orientation,
         "outdir": rel(outdir),
-        "method": "crop_black_native_whs_ends_then_linear_ap_resample_to_nonempty_paxinos_label_range",
+        "method": "complete_native_whs_extent_linear_ap_resample_39um_to_40um",
         "source_native_shape_ap_si_lr": [int(v) for v in source.shape],
-        "source_nonblack_ap_min_max": [int(source_valid[0]), int(source_valid[-1])],
-        "source_nonblack_plane_count": int(source_valid.size),
-        "paxinos_labeled_ap_min_max": [int(fixed_valid[0]), int(fixed_valid[-1])],
-        "exported_plane_count": int(fixed_valid.size),
+        "source_native_ap_min_max": [0, int(source.shape[0] - 1)],
+        "source_sampled_ap_min_max": [float(source_ap[0]), float(source_ap[-1])],
+        "exported_plane_count": int(source_ap.size),
         "exported_slice_shape_si_lr": [int(source.shape[1]), int(source.shape[2])],
         "output_spacing_mm": 0.040,
         "embedded_pixel_size_um": [39.0, 39.0],
-        "output_dtype": "uint16",
-        "intensity_normalization": "global_nonzero_p0.5_p99.5_to_uint16",
+        "output_dtype": "uint8",
+        "intensity_normalization": "global_nonzero_p0.5_p99.5_to_display_safe_uint8",
         "intensity_source_low_high": [float(intensity_low), float(intensity_high)],
+        "recommended_abba_display_range": [0, 255],
         "in_plane_spatial_resampling_applied": False,
         "ap_resampling_applied": True,
-        "all_exported_planes_nonblack": True,
-        "note": "One non-black Nissl image is exported for every contiguous Paxinos AP plane containing labels. Filenames carry the actual Paxinos AP index; ABBA should import the series at +0.040 mm.",
+        "black_end_planes_preserved": True,
+        "note": "The complete WHS AP extent is exported at 40 um without cropping black ends. ABBA should import the numerically sorted series at +0.040 mm and set its common AP offset there.",
     }})
-    print(f"Exported {fixed_valid.size} WHS/Nissl images to: {rel(outdir)}")
-    print(f"Paxinos labeled AP range: {int(fixed_valid[0])}-{int(fixed_valid[-1])}")
-    print(f"Native WHS non-black AP range after orientation: {int(source_valid[0])}-{int(source_valid[-1])}")
-    print("AP resampling: native 39 um WHS span -> one plane per labeled 40 um Paxinos AP index")
+    print(f"Exported {source_ap.size} WHS/Nissl images to: {rel(outdir)}")
+    print(f"Complete native WHS AP range retained: 0-{source.shape[0] - 1} (black end planes included)")
+    print("AP resampling: complete native 39 um WHS span -> regular 40 um planes")
     print("In-plane resampling: NONE (ABBA performs the remaining 2D registration)")
     print("In-plane calibration embedded in TIFF/OME metadata: 39 x 39 um per pixel")
-    print(f"Intensity normalization: global non-zero p0.5={intensity_low:.3f} to p99.5={intensity_high:.3f} -> uint16")
+    print(f"Intensity normalization: global non-zero p0.5={intensity_low:.3f} to p99.5={intensity_high:.3f} -> display-safe uint8")
+    print("ABBA display range: use min=0 and max=255; then narrow max only if more contrast is needed")
     print("Recommended ABBA axis increment: +0.040 mm")
     return 0
 
