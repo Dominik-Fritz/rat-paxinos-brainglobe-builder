@@ -2034,6 +2034,18 @@ def export_whs_paxinos_slices() -> int:
     source_valid = np.flatnonzero(np.any(source != 0, axis=(1, 2)))
     if source_valid.size == 0:
         raise ValueError("Native WHS/Nissl source contains no non-black AP planes.")
+    intensity_view = source[source_valid[0] : source_valid[-1] + 1].reshape(-1)
+    sample_step = max(1, intensity_view.size // 2_000_000)
+    intensity_sample = intensity_view[::sample_step]
+    intensity_sample = intensity_sample[intensity_sample > 0]
+    if intensity_sample.size == 0:
+        raise ValueError("Native WHS/Nissl source contains no positive intensity samples.")
+    intensity_low, intensity_high = np.percentile(intensity_sample, [0.5, 99.5])
+    if not np.isfinite(intensity_low) or not np.isfinite(intensity_high) or intensity_high <= intensity_low:
+        intensity_low = float(intensity_sample.min())
+        intensity_high = float(intensity_sample.max())
+    if intensity_high <= intensity_low:
+        raise ValueError("Native WHS/Nissl source has no usable intensity range for registration images.")
 
     fixed_mask, annotation_path, fixed_orientation = load_fixed_label_mask()
     fixed_valid = np.flatnonzero(np.any(fixed_mask, axis=(1, 2)))
@@ -2061,13 +2073,31 @@ def export_whs_paxinos_slices() -> int:
         hi = int(np.ceil(moving_ap))
         alpha = np.float32(moving_ap - lo)
         image = source[lo] if lo == hi else source[lo] * (1.0 - alpha) + source[hi] * alpha
-        image = np.clip(image, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+        positive = image > 0
+        normalized = np.clip((image - intensity_low) / (intensity_high - intensity_low), 0.0, 1.0)
+        image = np.zeros(image.shape, dtype=np.uint16)
+        image[positive] = 1 + np.round(normalized[positive] * (np.iinfo(np.uint16).max - 1)).astype(np.uint16)
         if not np.any(image):
             raise ValueError(
                 f"AP resampling produced a completely black Nissl image for Paxinos AP {int(fixed_ap)}."
             )
         name = f"whs_nissl_paxinos_ap_{int(fixed_ap):0{index_width}d}.tiff"
-        tifffile.imwrite(outdir / name, image, bigtiff=False)
+        tifffile.imwrite(
+            outdir / name,
+            image,
+            bigtiff=False,
+            photometric="minisblack",
+            resolution=(10000.0 / 39.0, 10000.0 / 39.0),
+            resolutionunit="CENTIMETER",
+            ome=True,
+            metadata={
+                "axes": "YX",
+                "PhysicalSizeX": 39.0,
+                "PhysicalSizeXUnit": "µm",
+                "PhysicalSizeY": 39.0,
+                "PhysicalSizeYUnit": "µm",
+            },
+        )
         manifest_lines.append(
             f"{series_index},{int(fixed_ap)},{float(fixed_ap) * 0.040:.3f},{moving_ap:.6f},{name}"
         )
@@ -2085,6 +2115,10 @@ def export_whs_paxinos_slices() -> int:
         "exported_plane_count": int(fixed_valid.size),
         "exported_slice_shape_si_lr": [int(source.shape[1]), int(source.shape[2])],
         "output_spacing_mm": 0.040,
+        "embedded_pixel_size_um": [39.0, 39.0],
+        "output_dtype": "uint16",
+        "intensity_normalization": "global_nonzero_p0.5_p99.5_to_uint16",
+        "intensity_source_low_high": [float(intensity_low), float(intensity_high)],
         "in_plane_spatial_resampling_applied": False,
         "ap_resampling_applied": True,
         "all_exported_planes_nonblack": True,
@@ -2095,6 +2129,8 @@ def export_whs_paxinos_slices() -> int:
     print(f"Native WHS non-black AP range after orientation: {int(source_valid[0])}-{int(source_valid[-1])}")
     print("AP resampling: native 39 um WHS span -> one plane per labeled 40 um Paxinos AP index")
     print("In-plane resampling: NONE (ABBA performs the remaining 2D registration)")
+    print("In-plane calibration embedded in TIFF/OME metadata: 39 x 39 um per pixel")
+    print(f"Intensity normalization: global non-zero p0.5={intensity_low:.3f} to p99.5={intensity_high:.3f} -> uint16")
     print("Recommended ABBA axis increment: +0.040 mm")
     return 0
 
