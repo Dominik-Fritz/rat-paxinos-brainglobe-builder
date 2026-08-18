@@ -9,27 +9,33 @@ set "BUILDER_ROOT=%~dp0."
 echo.
 echo ============================================================
 echo  Rat Paxinos BrainGlobe Builder
-echo  LabelAtlas-only release candidate
+echo  0.3.0 prerelease candidate with registered WHS/Nissl Ch03
 echo ============================================================
 echo.
-echo This runner builds/installs the Paxinos-Watson rat LabelAtlas.
-echo It does not build Waxholm/SIGMA/NeuroRat/MRI reference channels.
+echo This single runner builds/installs the Paxinos-Watson rat LabelAtlas
+echo and imports the final manually registered Waxholm Nissl reference.
 echo.
 echo Required ABBA display after build:
 echo   reference (Ch. 0)                         = ON
 echo   soft_region_fill_reference (Ch. 1)         = optional
 echo   distance_to_2d_outline_reference (Ch. 2)   = optional
+echo   waxholm_anatomy_reference (Ch. 3)           = optional Nissl aid
 echo   native borders display source              = hidden by V44
 echo.
 
 set "PY_EXE="
 set "VENV_DIR=.venv"
 set "REQ_FILE=requirements.txt"
-set "PATCH_ABBA=ASK"
+set "PATCH_ABBA=YES"
+set "WITH_NISSL=YES"
+set "NISSL_PACKAGE=%PAXINOS_NISSL_PACKAGE%"
+set "NISSL_STACK_ORDER=%PAXINOS_NISSL_STACK_ORDER%"
+if "%NISSL_STACK_ORDER%"=="" set "NISSL_STACK_ORDER=posterior-to-anterior"
 
 for %%A in (%*) do (
     if /I "%%~A"=="--patch-abba" set "PATCH_ABBA=YES"
     if /I "%%~A"=="--no-patch-abba" set "PATCH_ABBA=NO"
+    if /I "%%~A"=="--without-nissl" set "WITH_NISSL=NO"
 )
 
 echo [1/30] Checking Python installation...
@@ -67,6 +73,13 @@ if "%PY_EXE%"=="" (
 
 echo.
 echo [2/30] Creating/checking local virtual environment...
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    "%VENV_DIR%\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] in [(3,11),(3,12)] else 1)" >nul 2>nul
+    if errorlevel 1 (
+        echo Existing .venv is broken or does not use Python 3.11/3.12. Recreating it...
+        rmdir /s /q "%VENV_DIR%" || goto fail
+    )
+)
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     %PY_EXE% -m venv "%VENV_DIR%" || goto fail
 )
@@ -85,6 +98,11 @@ if errorlevel 1 (
 echo.
 echo [3/30] Installing Python requirements...
 "%VENV_PY%" -m pip install -r "%REQ_FILE%" || goto fail
+
+echo.
+echo [3B/30] Verifying pinned BrainGlobe compatibility runtime...
+"%VENV_PY%" -c "import importlib.metadata as m; v=m.version('brainglobe-atlasapi'); print('brainglobe-atlasapi=',v); raise SystemExit(0 if v=='2.3.1' else 1)" || goto fail
+"%VENV_PY%" -m pip check || goto fail
 
 echo.
 echo [4/30] Running syntax smoke test...
@@ -218,6 +236,25 @@ echo.
 echo [24/30] Installed atlas display baseline applied.
 
 echo.
+echo [24B/30] Importing final manually registered WHS/Nissl Ch03...
+if /I "%WITH_NISSL%"=="NO" (
+    echo Explicit --without-nissl requested. Building legacy label-only atlas.
+) else (
+    if "!NISSL_PACKAGE!"=="" if exist "%~dp0resources\optional_ch03\abba_registration_package" set "NISSL_PACKAGE=%~dp0resources\optional_ch03\abba_registration_package"
+    if "!NISSL_PACKAGE!"=="" if exist "G:\nissl_registration" set "NISSL_PACKAGE=G:\nissl_registration"
+    if "!NISSL_PACKAGE!"=="" (
+        echo ERROR: The 0.3.0 build requires the final ABBA registration package.
+        echo Put it in resources\optional_ch03\abba_registration_package
+        echo or set PAXINOS_NISSL_PACKAGE to its full path.
+        echo To intentionally build the legacy atlas, pass --without-nissl.
+        goto fail
+    )
+    echo Nissl package: !NISSL_PACKAGE!
+    echo Stack order:   !NISSL_STACK_ORDER!
+    "%VENV_PY%" "src\v53_ch03_landmarker.py" ch03-build-from-package "!NISSL_PACKAGE!" "!NISSL_STACK_ORDER!" || goto fail
+)
+
+echo.
 echo [25/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="ASK" (
     choice /C YN /M "Patch ABBA installations so local BrainGlobe atlases appear in ABBA?"
@@ -250,6 +287,7 @@ echo ABBA display settings:
 echo   reference (Ch. 0)                         = ON
 echo   soft_region_fill_reference (Ch. 1)         = optional
 echo   distance_to_2d_outline_reference (Ch. 2)   = optional
+if /I "%WITH_NISSL%"=="YES" echo   waxholm_anatomy_reference (Ch. 3)           = optional Nissl aid
 echo   native borders display source              = hidden by V44
 echo.
 echo Open atlas:
