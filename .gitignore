@@ -37,6 +37,7 @@ resources/label_curation/*.bak
 # Local generated atlas backups
 backups/
 resources/label_curation/*.backup_before_final_curation.tsv
+resources/optional_ch03/abba_registration_package/
 PATCH_README_APPLY_CURATED_ACRONYMS.md
 README_FINAL_LABEL_CURATION_PATCH*.md
 README_VESTIBULAR*.md
