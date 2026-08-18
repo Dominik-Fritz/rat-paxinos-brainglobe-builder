@@ -2235,7 +2235,23 @@ def inspect_abba_package(package_path: str) -> int:
     """Inventory a portable ABBA/QuPath export before attempting reconstruction."""
     package = Path(package_path).expanduser().resolve()
     if not package.is_dir():
-        raise NotADirectoryError(f"ABBA package folder does not exist: {package}")
+        suggestions: list[Path] = []
+        # Windows Explorer displays a drive label before ``(G:)``. That label is
+        # not a directory component. If the supplied path accidentally includes
+        # it, suggest the same final folder directly below the drive root.
+        if package.anchor and package.name:
+            direct_on_drive = Path(package.anchor) / package.name
+            if direct_on_drive.is_dir():
+                suggestions.append(direct_on_drive)
+        detail = f"ABBA package folder does not exist: {package}"
+        if suggestions:
+            detail += "\nDid you mean: " + " or ".join(str(path) for path in suggestions)
+        detail += (
+            "\nTip: in Windows Explorer, text such as 'Dominik_different_projects (G:)' "
+            "may be the drive label. In that case the folder is G:\\nissl_registration, "
+            "not G:\\Dominik_different_projects\\nissl_registration."
+        )
+        raise NotADirectoryError(detail)
 
     files = [path for path in package.rglob("*") if path.is_file()]
     suffix_counts = Counter(path.suffix.lower() or "<no_suffix>" for path in files)

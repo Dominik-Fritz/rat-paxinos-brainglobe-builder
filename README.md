@@ -147,6 +147,11 @@ large artifact, inventory the package from the repository root:
 run_ch03_registration.bat abba-package-inspect G:\path\to\nissl_registration
 ```
 
+Use the actual filesystem path, not the Windows Explorer drive label. For
+example, if Explorer shows `Dominik_different_projects (G:) > nissl_registration`,
+the path is normally `G:\nissl_registration`, not
+`G:\Dominik_different_projects\nissl_registration`.
+
 The inventory, including hashes, TIFF dimensions, source-index coverage, BDV
 source classes, and serialized thin-plate-spline counts, is written to
 `reports/v53_ch03_landmarks/abba_package_inventory.json`.
