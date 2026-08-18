@@ -2217,6 +2217,38 @@ def inspect_tiff_header(path: Path) -> dict:
     try:
         with tifffile.TiffFile(path) as tif:
             series = tif.series[0]
+            imagej_metadata_summary: dict[str, object] | None = None
+            if isinstance(tif.imagej_metadata, dict):
+                imagej_metadata_summary = {}
+                for key, value in tif.imagej_metadata.items():
+                    if value is None or isinstance(value, (bool, int, float)):
+                        imagej_metadata_summary[str(key)] = value
+                    elif isinstance(value, str):
+                        # ImageJ's ``Info`` field can embed hundreds of megabytes
+                        # of source/transform text. Hash and preview it instead of
+                        # copying it verbatim into the inventory report.
+                        encoded = value.encode("utf-8", errors="replace")
+                        imagej_metadata_summary[str(key)] = {
+                            "type": "str",
+                            "characters": len(value),
+                            "utf8_bytes": len(encoded),
+                            "sha256": hashlib.sha256(encoded).hexdigest(),
+                            "preview": value[:240],
+                            "truncated": len(value) > 240,
+                        }
+                    elif isinstance(value, (list, tuple)):
+                        imagej_metadata_summary[str(key)] = {
+                            "type": type(value).__name__,
+                            "item_count": len(value),
+                        }
+                    elif isinstance(value, dict):
+                        imagej_metadata_summary[str(key)] = {
+                            "type": "dict",
+                            "item_count": len(value),
+                            "keys": [str(item) for item in list(value)[:40]],
+                        }
+                    else:
+                        imagej_metadata_summary[str(key)] = {"type": type(value).__name__}
             result.update({
                 "shape": [int(v) for v in series.shape],
                 "axes": series.axes,
@@ -2224,7 +2256,7 @@ def inspect_tiff_header(path: Path) -> dict:
                 "page_count": len(tif.pages),
                 "is_imagej": bool(tif.is_imagej),
                 "is_ome": bool(tif.is_ome),
-                "imagej_metadata": tif.imagej_metadata,
+                "imagej_metadata_summary": imagej_metadata_summary,
             })
     except Exception as exc:
         result["error"] = str(exc)
@@ -2279,6 +2311,7 @@ def inspect_abba_package(package_path: str) -> int:
         and ("stack" in path.name.lower() or "registered" in path.name.lower() or path.stat().st_size >= 32 * 1024 * 1024)
     ]
     report = {
+        "report_schema": "compact_v2",
         "package": str(package),
         "file_count": len(files),
         "total_bytes": sum(path.stat().st_size for path in files),
@@ -2296,9 +2329,19 @@ def inspect_abba_package(package_path: str) -> int:
     }
     ensure_dirs()
     destination = REPORT_DIR / "abba_package_inventory.json"
-    destination.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    serialized = json.dumps(report, indent=2, sort_keys=True, default=str)
+    # This is an inventory, not a copy of the source package. A large report is
+    # evidence that embedded metadata leaked into it and would be impractical to
+    # review or attach to an issue.
+    if len(serialized.encode("utf-8")) > 8 * 1024 * 1024:
+        raise RuntimeError(
+            "Compact ABBA inventory unexpectedly exceeds 8 MiB. Keep the previous report for audit, "
+            "but do not share it; report this as an inspector bug."
+        )
+    destination.write_text(serialized, encoding="utf-8")
     write_json({"abba_package_inspect": {"package": str(package), "inventory": rel(destination)}})
     print(f"ABBA package inventory written: {rel(destination)}")
+    print(f"Compact inventory size: {destination.stat().st_size} bytes")
     print(f"Files: {report['file_count']} | bytes: {report['total_bytes']}")
     print(f"ABBA states: {len(state_files)} | JSON exports: {len(json_files)} | registered TIFF candidates: {len(tiff_candidates)}")
     for item in report["registered_tiff_candidates"]:

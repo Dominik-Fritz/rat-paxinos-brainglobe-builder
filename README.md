@@ -155,6 +155,9 @@ the path is normally `G:\nissl_registration`, not
 The inventory, including hashes, TIFF dimensions, source-index coverage, BDV
 source classes, and serialized thin-plate-spline counts, is written to
 `reports/v53_ch03_landmarks/abba_package_inventory.json`.
+Large embedded ImageJ metadata are represented only by their size, SHA-256 hash,
+and a short preview. They are never copied wholesale into the inventory, and the
+compact report is rejected if it unexpectedly exceeds 8 MiB.
 
 The preferred final artifact is a registered TIFF with the exact atlas shape
 `AP,SI,LR = 608,286,409`. A 588-plane ImageJ stack can be imported directly only
