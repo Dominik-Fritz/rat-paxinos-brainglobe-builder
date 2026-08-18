@@ -117,3 +117,59 @@ RUN_07_STATUS_SYNTHETIC_REFERENCE.bat
 `RUN_05` applies the synthetic soft reference to the installed atlas only.  
 `RUN_06` restores the older V32.27 border-proxy reference baseline.  
 `RUN_07` performs a dry-run/status check.
+
+## Optional WHS Nissl Ch03 interpretation
+
+The optional Ch03 Nissl channel is a manually registered visual aid, not a
+Paxinos-derived anatomical ground truth. WHS Nissl sections were assigned to
+their corresponding Paxinos label-volume planes with BigWarp spline
+transformations. Registration aimed for the highest practical structural
+agreement, and every retained section was visually checked and corrected where
+necessary.
+
+The Nissl images originate from the Waxholm Space atlas, whereas the annotation
+volume originates from the Paxinos/Watson atlas. They therefore represent
+different source anatomies and cannot be expected to coincide exactly. Local
+deviations between Nissl structures and label boundaries may remain despite
+careful registration. These differences can be more apparent in the far
+anterior and far posterior parts of the series. The channel must consequently
+be interpreted only as an orientation and visualization aid; the Paxinos label
+volume remains authoritative for region assignment.
+
+## Reconstructing the manually registered Ch03 channel
+
+The final manual registration package should retain the ABBA state, standardized
+ABBA project, complete QuPath project and original exported WHS slices, the ABBA
+BDV JSON export, and the registered ImageJ TIFF stack. Before importing any
+large artifact, inventory the package from the repository root:
+
+```text
+run_ch03_registration.bat abba-package-inspect G:\path\to\nissl_registration
+```
+
+The inventory, including hashes, TIFF dimensions, source-index coverage, BDV
+source classes, and serialized thin-plate-spline counts, is written to
+`reports/v53_ch03_landmarks/abba_package_inventory.json`.
+
+The preferred final artifact is a registered TIFF with the exact atlas shape
+`AP,SI,LR = 608,286,409`. A 588-plane ImageJ stack can be imported directly only
+when it contains exactly one plane for every non-empty annotation AP plane and
+already has the exact target in-plane dimensions. The plane order must be stated
+explicitly; the importer never guesses, crops, or resizes registered data:
+
+```text
+run_ch03_registration.bat ch03-import-imagej-stack G:\path\to\registered_slices_ImageJ_stack.tif anterior-to-posterior
+```
+
+If strict validation fails, keep the original package unchanged and use the
+inventory report to implement a documented reconstruction from the standardized
+ABBA/BDV transformations instead of forcing a geometrically ambiguous resize.
+
+## Builder runtime compatibility
+
+The Windows builder supports Python 3.11 and 3.12 and pins
+`brainglobe-atlasapi==2.3.1`. BrainGlobe 3.x is not used because its atlas build
+and installation API is incompatible with this legacy 0.2.x builder pipeline.
+`run_builder.bat` recreates an unusable local virtual environment, verifies the
+pinned BrainGlobe version after installation, and runs `pip check` before the
+build starts.

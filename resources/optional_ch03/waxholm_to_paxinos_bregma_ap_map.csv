@@ -1,0 +1,2 @@
+enabled,name,bregma_mm,fixed_ap,moving_ap,weight,notes
+0,example_bregma_anchor,,,,,1,"Bregma-calibrated AP anchor. fixed_ap=Paxinos target AP index, moving_ap=oriented/affine WHS AP index for same Bregma level. Enable with 1."

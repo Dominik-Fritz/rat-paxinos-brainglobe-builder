@@ -67,6 +67,13 @@ if "%PY_EXE%"=="" (
 
 echo.
 echo [2/30] Creating/checking local virtual environment...
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    "%VENV_DIR%\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] in [(3,11),(3,12)] else 1)" >nul 2>nul
+    if errorlevel 1 (
+        echo Existing .venv is broken or does not use Python 3.11/3.12. Recreating it...
+        rmdir /s /q "%VENV_DIR%" || goto fail
+    )
+)
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     %PY_EXE% -m venv "%VENV_DIR%" || goto fail
 )
@@ -85,6 +92,11 @@ if errorlevel 1 (
 echo.
 echo [3/30] Installing Python requirements...
 "%VENV_PY%" -m pip install -r "%REQ_FILE%" || goto fail
+
+echo.
+echo [3B/30] Verifying pinned BrainGlobe compatibility runtime...
+"%VENV_PY%" -c "import importlib.metadata as m; v=m.version('brainglobe-atlasapi'); print('brainglobe-atlasapi=',v); raise SystemExit(0 if v=='2.3.1' else 1)" || goto fail
+"%VENV_PY%" -m pip check || goto fail
 
 echo.
 echo [4/30] Running syntax smoke test...
