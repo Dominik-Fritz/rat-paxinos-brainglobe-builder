@@ -10,6 +10,7 @@ data/output/*
 !data/output/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+/data/release_assets/
 
 # Raw data are large and must stay local
 /data/raw/bluebrainheadmodels/*
@@ -37,6 +38,12 @@ resources/label_curation/*.bak
 # Local generated atlas backups
 backups/
 resources/label_curation/*.backup_before_final_curation.tsv
+resources/optional_ch03/nissl_registration_0_3_0/*.tif
+resources/optional_ch03/nissl_registration_0_3_0/*.tiff
+resources/optional_ch03/nissl_registration_0_3_0/*.abba
+resources/optional_ch03/nissl_registration_0_3_0/*bdv*
+resources/optional_ch03/nissl_registration_0_3_0/*.qpproj*
+paxinos_watson_rat_nissl_registration_*.zip
 PATCH_README_APPLY_CURATED_ACRONYMS.md
 README_FINAL_LABEL_CURATION_PATCH*.md
 README_VESTIBULAR*.md
