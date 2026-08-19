@@ -2,11 +2,15 @@
   "schema_version": 1,
   "release": "0.3.0-prerelease",
   "asset_name": "paxinos_watson_rat_nissl_registration_0.3.0.zip",
-  "download_url": "",
-  "sha256": "",
+  "download_url": "https://github.com/Dominik-Fritz/rat-paxinos-brainglobe-builder/releases/download/v0.3.0/paxinos_watson_rat_nissl_registration_0.3.0.zip",
+  "sha256": "1c26fef2c7e487bb9e1dff0f42330358138b25ccab6567549ef9db200ed4ce3e",
   "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
   "expected_registration_manifest": "registration_manifest.json",
-  "expected_stack_shape": [588, 656, 940],
+  "expected_stack_shape": [
+    588,
+    656,
+    940
+  ],
   "stack_order": "anterior-to-posterior",
   "target_sequence_offset": 1,
   "anterior_edge_policy": "duplicate_first_registered_plane",
