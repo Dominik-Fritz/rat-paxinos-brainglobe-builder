@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "release": "0.3.0-prerelease",
+  "asset_name": "paxinos_watson_rat_nissl_registration_0.3.0.zip",
+  "download_url": "",
+  "sha256": "",
+  "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+  "expected_registration_manifest": "registration_manifest.json",
+  "expected_stack_shape": [588, 656, 940],
+  "stack_order": "anterior-to-posterior",
+  "target_sequence_offset": 1,
+  "note": "The embedded nissl_registration_0_3_0 folder is the only local source. A pinned release URL may provide the same package after publication."
+}
