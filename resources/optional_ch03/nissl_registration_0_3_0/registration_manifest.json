@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "release": "0.3.0-prerelease",
+  "stack_file": "registered_slices_ImageJ_stack.tif",
+  "state_file": "final_for_V_0_3.abba",
+  "stack_order": "anterior-to-posterior",
+  "target_sequence_offset": 1,
+  "anterior_edge_policy": "duplicate_first_registered_plane",
+  "expected_stack_shape": [588, 656, 940],
+  "source_index_range": [189, 776],
+  "source_pixel_size_um": 19.5,
+  "target_voxel_size_um": 40.0
+}

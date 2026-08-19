@@ -4,7 +4,9 @@ nibabel>=5.2
 rich>=13.7
 scikit-image>=0.23
 tifffile>=2024.2.12
-brainglobe-atlasapi>=2.0.0
+# The 0.2.x/ABBA-compatible builder uses the pre-3.x BrainGlobe package API.
+# BrainGlobe 3.x rejects this legacy local-atlas build/install path.
+brainglobe-atlasapi==2.3.1
 brainglobe-utils>=0.5.0
 packaging>=24.0
 scipy>=1.11
