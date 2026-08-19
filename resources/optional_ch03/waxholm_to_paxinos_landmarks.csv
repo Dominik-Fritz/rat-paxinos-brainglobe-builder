@@ -1,0 +1,2 @@
+enabled,name,fixed_ap,fixed_si,fixed_lr,moving_ap,moving_si,moving_lr,weight,notes
+0,example_midline_landmark,,,,,,,1,"Replace with AP,SI,LR coordinates; enable with 1/true/yes."
