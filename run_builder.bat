@@ -2,36 +2,40 @@
 set "PYTHONDONTWRITEBYTECODE=1"
 setlocal EnableExtensions EnableDelayedExpansion
 
-title Rat Paxinos BrainGlobe Builder
+title Rat Paxinos 0.3.0 Atlas Builder
 cd /d "%~dp0"
 set "BUILDER_ROOT=%~dp0."
+set "BUILD_STARTED=%DATE% %TIME%"
+set "CURRENT_STAGE=Startup"
 
 echo.
-echo ============================================================
-echo  Rat Paxinos BrainGlobe Builder
-echo  LabelAtlas-only release candidate
-echo ============================================================
+echo +======================================================================+
+echo ^|                                                                      ^|
+echo ^|              RAT PAXINOS / WATSON ATLAS BUILDER                     ^|
+echo ^|                         0.3.0 PRERELEASE                             ^|
+echo ^|                                                                      ^|
+echo +======================================================================+
 echo.
-echo This runner builds/installs the Paxinos-Watson rat LabelAtlas.
-echo It does not build Waxholm/SIGMA/NeuroRat/MRI reference channels.
-echo.
-echo Required ABBA display after build:
-echo   reference (Ch. 0)                         = ON
-echo   soft_region_fill_reference (Ch. 1)         = optional
-echo   distance_to_2d_outline_reference (Ch. 2)   = optional
-echo   native borders display source              = hidden by V44
+echo   Build target : paxinos_watson_rat_40um
+echo   Components   : Paxinos labels + registered WHS Nissl reference
+echo   Started      : %BUILD_STARTED%
 echo.
 
 set "PY_EXE="
 set "VENV_DIR=.venv"
 set "REQ_FILE=requirements.txt"
-set "PATCH_ABBA=ASK"
+set "PATCH_ABBA=YES"
+set "WITH_NISSL=YES"
+set "NISSL_PACKAGE="
 
 for %%A in (%*) do (
     if /I "%%~A"=="--patch-abba" set "PATCH_ABBA=YES"
     if /I "%%~A"=="--no-patch-abba" set "PATCH_ABBA=NO"
+    if /I "%%~A"=="--without-nissl" set "WITH_NISSL=NO"
 )
 
+call :phase "1/6" "Runtime and dependency setup"
+set "CURRENT_STAGE=Python detection"
 echo [1/30] Checking Python installation...
 call :detect_python
 
@@ -40,16 +44,14 @@ if "%PY_EXE%"=="" (
     where winget >nul 2>nul
     if errorlevel 1 (
         echo winget was not found. Install Python 3.11 or 3.12 manually and run again.
-        pause
-        exit /b 1
+        goto fail
     )
 
     echo Installing Python 3.12 via winget...
     winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
     if errorlevel 1 (
         echo winget Python installation failed. Install Python 3.11 or 3.12 manually and run again.
-        pause
-        exit /b 1
+        goto fail
     )
 
     echo Re-checking Python after winget install...
@@ -59,14 +61,20 @@ if "%PY_EXE%"=="" (
 if "%PY_EXE%"=="" (
     echo Python was installed but is not visible in this terminal yet.
     echo Close this terminal, open a new one, and run run_builder.bat again.
-    pause
-    exit /b 1
+    goto fail
 )
 
 %PY_EXE% --version || goto fail
 
 echo.
 echo [2/30] Creating/checking local virtual environment...
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    "%VENV_DIR%\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] in [(3,11),(3,12)] else 1)" >nul 2>nul
+    if errorlevel 1 (
+        echo Existing .venv is broken or does not use Python 3.11/3.12. Recreating it...
+        rmdir /s /q "%VENV_DIR%" || goto fail
+    )
+)
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     %PY_EXE% -m venv "%VENV_DIR%" || goto fail
 )
@@ -87,9 +95,15 @@ echo [3/30] Installing Python requirements...
 "%VENV_PY%" -m pip install -r "%REQ_FILE%" || goto fail
 
 echo.
+echo [3B/30] Verifying pinned BrainGlobe compatibility runtime...
+"%VENV_PY%" -c "import importlib.metadata as m; v=m.version('brainglobe-atlasapi'); print('brainglobe-atlasapi=',v); raise SystemExit(0 if v=='2.3.1' else 1)" || goto fail
+"%VENV_PY%" -m pip check || goto fail
+
+echo.
 echo [4/30] Running syntax smoke test...
 "%VENV_PY%" -B "src\release_syntax_check_no_pycache.py" || goto fail
 
+call :phase "2/6" "Source data and ontology preparation"
 echo.
 echo [5/30] Cleaning previous generated outputs...
 if exist "src\v27_clean_generated_outputs.py" "%VENV_PY%" "src\v27_clean_generated_outputs.py" || goto fail
@@ -143,6 +157,7 @@ echo.
 echo [13/30] Building hierarchical draft structures...
 "%VENV_PY%" "src\v16_build_hierarchical_structures.py" --stage draft || goto fail
 
+call :phase "3/6" "Provisional atlas construction and validation"
 echo.
 echo [14/30] Building provisional atlas folder...
 "%VENV_PY%" "src\build_provisional_brainglobe_atlas.py" || goto fail
@@ -171,6 +186,7 @@ echo.
 echo [18/30] Validating provisional atlas package...
 "%VENV_PY%" "src\validate_provisional_atlas_package.py" || goto fail
 
+call :phase "4/6" "Release candidate construction and native installation"
 echo.
 echo [19/30] Building official candidate package...
 "%VENV_PY%" "src\build_official_candidate.py" || goto fail
@@ -217,6 +233,27 @@ if not exist "src\v43c_restore_v43_distance_channel.py" (
 echo.
 echo [24/30] Installed atlas display baseline applied.
 
+call :phase "5/6" "Registered Nissl channel"
+echo.
+echo [24B/30] Importing final manually registered WHS/Nissl Ch03...
+if /I "%WITH_NISSL%"=="NO" (
+    echo Explicit --without-nissl requested. Building legacy label-only atlas.
+) else (
+    if "!NISSL_PACKAGE!"=="" (
+        set "NISSL_PATH_FILE=%BUILDER_ROOT%\reports\nissl_release_asset\resolved_package_path.txt"
+        "%VENV_PY%" "src\nissl_release_asset.py" resolve --root "%BUILDER_ROOT%" --path-file "!NISSL_PATH_FILE!" || goto fail
+        if exist "!NISSL_PATH_FILE!" set /p "NISSL_PACKAGE="<"!NISSL_PATH_FILE!"
+    )
+    if "!NISSL_PACKAGE!"=="" (
+        echo ERROR: The versioned Nissl registration asset could not be resolved.
+        echo See reports\nissl_release_asset\nissl_release_asset_summary.txt
+        goto fail
+    )
+    echo Nissl package: !NISSL_PACKAGE!
+    "%VENV_PY%" "src\ch03_nissl_pipeline.py" build-from-package "!NISSL_PACKAGE!" || goto fail
+)
+
+call :phase "6/6" "ABBA integration and final report"
 echo.
 echo [25/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="ASK" (
@@ -243,20 +280,24 @@ if errorlevel 1 (
 )
 
 echo.
-echo ============================================================
-echo Done.
+set "CURRENT_STAGE=Completed"
+"%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status success --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" || goto fail
 echo.
-echo ABBA display settings:
-echo   reference (Ch. 0)                         = ON
-echo   soft_region_fill_reference (Ch. 1)         = optional
-echo   distance_to_2d_outline_reference (Ch. 2)   = optional
-echo   native borders display source              = hidden by V44
+echo +======================================================================+
+echo ^|  [OK] Atlas package generated                                       ^|
+echo ^|  [OK] Paxinos annotation installed                                  ^|
+echo ^|  [OK] Registered WHS/Nissl reference installed                      ^|
+echo ^|  [OK] ABBA integration completed                                    ^|
+echo +======================================================================+
+echo ^| BUILD SUCCESSFUL                                                     ^|
+echo +======================================================================+
+echo   Atlas   : paxinos_watson_rat_40um
+if /I "%WITH_NISSL%"=="YES" echo   Result  : Paxinos annotation and registered Nissl channel installed
+if /I "%WITH_NISSL%"=="NO" echo   Result  : Paxinos annotation installed; Nissl explicitly disabled
+echo   Reports : %BUILDER_ROOT%\reports
+echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
 echo.
-echo Open atlas:
-echo   paxinos_watson_rat_40um
-echo.
-echo Reports are in: reports\
-echo ============================================================
+echo Restart Fiji/ABBA, open the atlas, and inspect Ch. 0 together with Ch. 3.
 echo.
 pause
 endlocal
@@ -312,6 +353,15 @@ if not errorlevel 1 (
 
 exit /b 0
 
+:phase
+set "CURRENT_STAGE=%~2"
+echo.
+echo +----------------------------------------------------------------------+
+echo ^| PHASE %~1                                                            ^|
+echo ^| %~2
+echo +----------------------------------------------------------------------+
+exit /b 0
+
 
 :missing_data
 echo.
@@ -329,13 +379,22 @@ echo   Paxinos_Watson_Labels_Cortex.txt
 echo.
 echo No MRI/reference-channel experiment was run.
 echo.
-pause
-exit /b 2
+goto fail
 
 :fail
 echo.
-echo Pipeline failed. Check reports\ and console output.
-echo No MRI/reference-channel experiment was run.
+if not exist "%BUILDER_ROOT%\reports" mkdir "%BUILDER_ROOT%\reports"
+>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Rat Paxinos/Watson Atlas Builder - Build Summary
+>>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Status: FAILED
+>>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Last stage: %CURRENT_STAGE%
+>>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Started: %BUILD_STARTED%
+if defined VENV_PY if exist "%VENV_PY%" "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status failed --stage "%CURRENT_STAGE%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%"
+echo +======================================================================+
+echo ^| BUILD FAILED                                                         ^|
+echo +======================================================================+
+echo   Stage   : %CURRENT_STAGE%
+echo   Reports : %BUILDER_ROOT%\reports
+echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
 echo.
 pause
 exit /b 1
