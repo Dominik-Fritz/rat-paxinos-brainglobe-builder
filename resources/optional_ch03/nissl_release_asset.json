@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "release": "0.3.0-prerelease",
+  "asset_name": "paxinos_watson_rat_nissl_registration_0.3.0.zip",
+  "download_url": "",
+  "sha256": "",
+  "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+  "expected_stack_shape": [588, 656, 940],
+  "stack_order": "anterior-to-posterior",
+  "unmatched_target_sequence_endpoint": "last",
+  "note": "The release maintainer fills download_url and sha256 after uploading the immutable registration package as a GitHub release asset. PAXINOS_NISSL_ASSET_URL and PAXINOS_NISSL_ASSET_SHA256 may override these fields for prerelease testing."
+}
