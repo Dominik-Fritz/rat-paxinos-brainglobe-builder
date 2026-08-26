@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 import shutil
+import sys
 import zipfile
 
 import numpy as np
@@ -14,6 +15,8 @@ import tifffile
 from src import ch03_nissl_pipeline as pipeline
 from src import nissl_release_asset
 from src import storage_preflight
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+import v25_clean_native_brainglobe_install as native_install
 
 
 class RegisteredStackTests(unittest.TestCase):
@@ -188,6 +191,29 @@ class NisslDisplayDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["coverage_fraction_median"], 0.5)
         self.assertFalse(report["pixels_modified"])
         np.testing.assert_array_equal(nissl, before)
+
+
+class NativeBackupTests(unittest.TestCase):
+    def test_existing_atlas_backup_moves_to_builder_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            brain_globe = root / "brain_globe"
+            atlas = brain_globe / "paxinos_watson_rat_40um_v1.0"
+            atlas.mkdir(parents=True)
+            (atlas / "metadata.json").write_text("{}", encoding="utf-8")
+            legacy = brain_globe / "_paxinos_cleanup_backup_old"
+            legacy.mkdir()
+            (legacy / "old.txt").write_text("old", encoding="utf-8")
+            backup_base = root / "builder" / "backups"
+            report = native_install.backup_existing_paxinos_cache(brain_globe, True, backup_base)
+            self.assertFalse(atlas.exists())
+            self.assertEqual(report["bytes_moved"], 2)
+            destination = Path(report["moved_items"][0]["to"])
+            self.assertTrue((destination / "metadata.json").is_file())
+            self.assertTrue(str(destination).startswith(str(backup_base)))
+            self.assertFalse(legacy.exists())
+            legacy_destination = Path(report["legacy_backup_items"][0]["to"])
+            self.assertTrue((legacy_destination / "old.txt").is_file())
 
 
 if __name__ == "__main__":

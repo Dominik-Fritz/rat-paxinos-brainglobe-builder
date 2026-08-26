@@ -328,3 +328,9 @@ warm-yellow (`#FFD54F`), low-opacity (`0.22`) display hint. This is deliberately
 client hint: current ABBA versions may still require the converter color and
 opacity to be applied in the ABBA UI until a separately tested loader patch is
 available.
+
+Repeated clean installations no longer accumulate full atlas backups inside the
+BrainGlobe directory (usually on `C:`). Existing and newly created native-atlas
+backups are moved, never deleted, under `backups/native_brainglobe` on the builder
+volume. This preserves rollback material while freeing the installation volume
+for the new atlas and its display channels.
