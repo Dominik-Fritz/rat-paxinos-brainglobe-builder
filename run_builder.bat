@@ -277,11 +277,15 @@ if /I "%PATCH_ABBA%"=="ASK" (
 )
 if /I "%PATCH_ABBA%"=="YES" (
     if defined ABBA_ROOT (
-        "%VENV_PY%" -B "src\step_runner.py" --build-dir "%BUILD_REPORT_DIR%" --phase "%CURRENT_STAGE%" -- "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all --abba-root "%ABBA_ROOT%"
+        >>"%BUILD_LOG%" echo COMMAND: "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all --abba-root "%ABBA_ROOT%"
+        "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all --abba-root "%ABBA_ROOT%"
     ) else (
-        "%VENV_PY%" -B "src\step_runner.py" --build-dir "%BUILD_REPORT_DIR%" --phase "%CURRENT_STAGE%" -- "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all
+        >>"%BUILD_LOG%" echo COMMAND: "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all
+        "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all
     )
-    if errorlevel 1 (
+    set "ABBA_V17_EXIT=!ERRORLEVEL!"
+    >>"%BUILD_LOG%" echo EXITCODE: !ABBA_V17_EXIT! component=ABBA_V17
+    if not "!ABBA_V17_EXIT!"=="0" (
         echo WARNING [ABBA_NOT_FOUND]: ABBA visibility patch was not applied.
         set "BUILD_WARNINGS=YES"
         if /I "%REQUIRE_ABBA%"=="YES" goto fail
@@ -293,8 +297,11 @@ if /I "%PATCH_ABBA%"=="YES" (
 if /I "%PATCH_ABBA%"=="YES" (
 echo.
 echo [26/30] Hiding native ABBA borders display source...
-"%VENV_PY%" -B "src\step_runner.py" --build-dir "%BUILD_REPORT_DIR%" --phase "%CURRENT_STAGE%" -- "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
-if errorlevel 1 (
+>>"%BUILD_LOG%" echo COMMAND: "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
+"%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
+set "ABBA_V44_EXIT=!ERRORLEVEL!"
+>>"%BUILD_LOG%" echo EXITCODE: !ABBA_V44_EXIT! component=ABBA_V44
+if not "!ABBA_V44_EXIT!"=="0" (
     echo WARNING [ABBA_NOT_FOUND]: ABBA was not found; atlas build remains valid.
     set "BUILD_WARNINGS=YES"
     if /I "%REQUIRE_ABBA%"=="YES" goto fail
@@ -305,7 +312,9 @@ echo.
 set "CURRENT_STAGE=Completed"
 set "FINAL_STATUS=success"
 if /I "%BUILD_WARNINGS%"=="YES" set "FINAL_STATUS=warnings"
-"%VENV_PY%" -B "src\step_runner.py" --build-dir "%BUILD_REPORT_DIR%" --phase "%CURRENT_STAGE%" -- "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --build-id "%BUILD_ID%" --status "%FINAL_STATUS%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" || goto fail
+>>"%BUILD_LOG%" echo COMMAND: write_build_summary status=%FINAL_STATUS%
+"%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --build-id "%BUILD_ID%" --status "%FINAL_STATUS%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%"
+if errorlevel 1 goto fail
 echo.
 echo +======================================================================+
 echo ^|  [OK] Atlas package generated                                       ^|

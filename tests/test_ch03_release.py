@@ -276,6 +276,10 @@ class BuilderBatchTests(unittest.TestCase):
         self.assertIn('--all --abba-root "%ABBA_ROOT%"', batch)
         self.assertIn('if /I "%PATCH_ABBA%"=="YES" (', batch)
         self.assertIn('set "BUILD_WARNINGS=YES"', batch)
+        abba_section = batch[batch.index('echo [25/30]'):batch.rindex('\n:parse_args')]
+        self.assertNotIn('step_runner.py', abba_section)
+        self.assertIn('ABBA_V17_EXIT=!ERRORLEVEL!', abba_section)
+        self.assertIn('ABBA_V44_EXIT=!ERRORLEVEL!', abba_section)
 
     def test_explicit_missing_python_is_fatal(self):
         batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
