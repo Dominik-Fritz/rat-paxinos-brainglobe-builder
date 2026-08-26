@@ -14,10 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import tarfile
-import tempfile
-import os
-import errno
-import gzip
 from typing import Iterable
 
 import nibabel as nib
@@ -57,13 +53,7 @@ def write_report(update: dict) -> None:
     report = json.loads(REPORT_JSON.read_text(encoding="utf-8")) if REPORT_JSON.exists() else {}
     report.update(update)
     report["updated_utc"] = datetime.now(timezone.utc).isoformat()
-    payload = json.dumps(report, indent=2, ensure_ascii=False)
-    REPORT_JSON.write_text(payload, encoding="utf-8")
-    build_id = os.environ.get("PAXINOS_BUILD_ID")
-    if build_id:
-        isolated = ROOT / "reports" / "builds" / build_id / "ch03_nissl_report.json"
-        isolated.parent.mkdir(parents=True, exist_ok=True)
-        isolated.write_text(payload, encoding="utf-8")
+    REPORT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def atlas_candidates() -> list[Path]:
@@ -151,57 +141,27 @@ def inspect_package(package: Path, manifest: dict) -> dict:
     return result
 
 
-def resample_plane(plane: np.ndarray) -> tuple[np.ndarray, str]:
-    """Resample one registered plane, never allocating a full converted stack."""
-    if plane.shape == TARGET_SHAPE[1:]:
-        return plane, "native Paxinos SI/LR grid"
-    if plane.shape == TARGET_SHAPE[1:][::-1]:
-        return plane.T, "transposed native Paxinos SI/LR grid"
-    if plane.shape != ABBA_CANVAS_SHAPE:
+def resample_abba_canvas(stack: np.ndarray) -> tuple[np.ndarray, str]:
+    if stack.shape[1:] == TARGET_SHAPE[1:]:
+        return stack, "native Paxinos SI/LR grid"
+    if stack.shape[1:] == TARGET_SHAPE[1:][::-1]:
+        return stack.transpose(0, 2, 1), "transposed native Paxinos SI/LR grid"
+    if stack.shape[1:] != ABBA_CANVAS_SHAPE:
         raise ValueError(
-            f"Unsupported registered plane shape {plane.shape}; expected {TARGET_SHAPE[1:]}, "
+            f"Unsupported registered plane shape {stack.shape[1:]}; expected {TARGET_SHAPE[1:]}, "
             f"{TARGET_SHAPE[1:][::-1]}, or calibrated ABBA canvas {ABBA_CANVAS_SHAPE}."
         )
     source_si = ((np.arange(TARGET_SHAPE[1]) - (TARGET_SHAPE[1] - 1) / 2) *
-                 (TARGET_VOXEL_MM / ABBA_PIXEL_MM) + (plane.shape[0] - 1) / 2)
+                 (TARGET_VOXEL_MM / ABBA_PIXEL_MM) + (stack.shape[1] - 1) / 2)
     source_lr = ((np.arange(TARGET_SHAPE[2]) - (TARGET_SHAPE[2] - 1) / 2) *
-                 (TARGET_VOXEL_MM / ABBA_PIXEL_MM) + (plane.shape[1] - 1) / 2)
-    if min(source_si[0], source_lr[0]) < 0 or source_si[-1] > plane.shape[0] - 1 or source_lr[-1] > plane.shape[1] - 1:
+                 (TARGET_VOXEL_MM / ABBA_PIXEL_MM) + (stack.shape[2] - 1) / 2)
+    if min(source_si[0], source_lr[0]) < 0 or source_si[-1] > stack.shape[1] - 1 or source_lr[-1] > stack.shape[2] - 1:
         raise ValueError("The Paxinos field of view lies outside the calibrated ABBA canvas.")
     grid_si, grid_lr = np.meshgrid(source_si, source_lr, indexing="ij")
-    converted = ndimage.map_coordinates(plane, [grid_si, grid_lr], order=1, mode="nearest", prefilter=False)
+    converted = np.empty((stack.shape[0], TARGET_SHAPE[1], TARGET_SHAPE[2]), dtype=stack.dtype)
+    for plane in range(stack.shape[0]):
+        converted[plane] = ndimage.map_coordinates(stack[plane], [grid_si, grid_lr], order=1, mode="nearest", prefilter=False)
     return converted, "centered 19.5-um ABBA canvas sampled on the 40-um Paxinos grid"
-
-
-def float_bounds(stack: np.ndarray) -> tuple[float, float]:
-    """Calculate the original exact percentiles through a disk memmap, not a RAM copy."""
-    OPTIONAL_DIR.mkdir(parents=True, exist_ok=True)
-    path = OPTIONAL_DIR / ".nissl-float-percentiles.tmp.dat"
-    values = np.memmap(path, mode="w+", dtype=np.float32, shape=(stack.size,))
-    offset = 0
-    try:
-        for index in range(stack.shape[0]):
-            plane = np.nan_to_num(np.asarray(stack[index], dtype=np.float32))
-            flattened = plane.reshape(-1)
-            values[offset:offset + flattened.size] = flattened
-            offset += flattened.size
-        values.flush()
-        low, high = np.percentile(values, (0.5, 99.5), overwrite_input=True)
-        return float(low), float(high)
-    finally:
-        del values
-        path.unlink(missing_ok=True)
-
-
-def plane_to_u16(plane: np.ndarray, bounds: tuple[float, float] | None) -> np.ndarray:
-    if plane.dtype == np.uint8:
-        return plane.astype(np.uint16) * 257
-    if np.issubdtype(plane.dtype, np.integer):
-        return np.clip(plane, 0, 65535).astype(np.uint16)
-    assert bounds is not None
-    low, high = bounds
-    finite = np.nan_to_num(plane.astype(np.float32), copy=False)
-    return np.clip((finite - low) / max(high - low, 1e-6) * 65535, 0, 65535).astype(np.uint16)
 
 
 def import_registered_stack(
@@ -220,42 +180,32 @@ def import_registered_stack(
     stack = np.moveaxis(stack, axes[0], 0)
     if stack_order == "posterior-to-anterior":
         stack = stack[::-1]
-    _, spatial_mapping = resample_plane(np.asarray(stack[0]))
-    bounds = float_bounds(stack) if np.issubdtype(stack.dtype, np.floating) else None
+    stack, spatial_mapping = resample_abba_canvas(stack)
+    if stack.dtype == np.uint8:
+        stack_u16 = stack.astype(np.uint16) * 257
+    elif np.issubdtype(stack.dtype, np.integer):
+        stack_u16 = np.clip(stack, 0, 65535).astype(np.uint16)
+    else:
+        finite = np.nan_to_num(stack.astype(np.float32), copy=False)
+        low, high = np.percentile(finite, (0.5, 99.5))
+        stack_u16 = np.clip((finite - low) / max(high - low, 1e-6) * 65535, 0, 65535).astype(np.uint16)
     if fixed_ap.size != 589:
         raise ValueError(f"Expected 589 non-empty Paxinos AP planes, found {fixed_ap.size}")
     start = int(target_sequence_offset)
-    target_ap = fixed_ap[start:start + stack.shape[0]]
-    if target_ap.size != stack.shape[0]:
+    target_ap = fixed_ap[start:start + stack_u16.shape[0]]
+    if target_ap.size != stack_u16.shape[0]:
         raise ValueError("The configured target sequence offset exceeds the Paxinos AP sequence.")
-    OPTIONAL_DIR.mkdir(parents=True, exist_ok=True)
-    memmap_path = OPTIONAL_DIR / ".waxholm_anatomy_reference.tmp.dat"
-    volume = np.memmap(memmap_path, mode="w+", dtype=np.uint16, shape=TARGET_SHAPE)
-    volume[:] = 0
-    for source_plane, destination_plane in enumerate(target_ap):
-        converted, _ = resample_plane(np.asarray(stack[source_plane]))
-        volume[int(destination_plane)] = plane_to_u16(converted, bounds)
+    volume = np.zeros(TARGET_SHAPE, dtype=np.uint16)
+    volume[target_ap] = stack_u16
     duplicated_target_ap: int | None = None
     if start == 1 and anterior_edge_policy == "duplicate_first_registered_plane":
         # There is no separately registered section for the leading target
         # position. Reusing the nearest registered section avoids an empty Ch03
         # edge while preserving the validated +1 alignment for all real pairs.
         duplicated_target_ap = int(fixed_ap[0])
-        first_plane, _ = resample_plane(np.asarray(stack[0]))
-        volume[duplicated_target_ap] = plane_to_u16(first_plane, bounds)
-    temporary_tiff = ACTIVE_PATH.with_suffix(".tiff.tmp")
-    try:
-        volume.flush(); tifffile.imwrite(temporary_tiff, volume, bigtiff=True)
-        with tifffile.TiffFile(temporary_tiff) as check:
-            if tuple(check.series[0].shape) != TARGET_SHAPE or check.series[0].dtype != np.dtype("uint16"):
-                raise ValueError("Transactional Nissl TIFF validation failed")
-        temporary_tiff.replace(ACTIVE_PATH)
-    except OSError as exc:
-        if exc.errno == errno.ENOSPC: raise RuntimeError("DISK_FULL: no space while writing the Nissl memmap/TIFF") from exc
-        raise
-    except MemoryError as exc: raise RuntimeError("MEMORY_EXHAUSTED: insufficient RAM for a Nissl plane") from exc
-    finally:
-        del volume; memmap_path.unlink(missing_ok=True); temporary_tiff.unlink(missing_ok=True)
+        volume[duplicated_target_ap] = stack_u16[0]
+    OPTIONAL_DIR.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(ACTIVE_PATH, volume, bigtiff=True)
     report = {
         "source": str(source), "source_sha256": sha256_file(source),
         "stack_order": stack_order, "target_sequence_offset": start,
@@ -274,7 +224,7 @@ def import_registered_stack(
     return report
 
 
-def write_nifti(active: np.ndarray, atlas: Path, name: str, output_dir: Path | None = None) -> Path:
+def write_nifti(active: np.ndarray, atlas: Path, name: str) -> Path:
     annotation = nib.load(str(atlas / "annotation.nii.gz"))
     target_shape = tuple(int(v) for v in annotation.shape[:3])
     if target_shape == tuple(active.shape):
@@ -283,78 +233,37 @@ def write_nifti(active: np.ndarray, atlas: Path, name: str, output_dir: Path | N
         data = active.transpose(2, 0, 1)
     else:
         raise ValueError(f"Cannot orient Ch03 {active.shape} to annotation NIfTI {target_shape}: {atlas}")
-    destination = (output_dir or atlas) / f"{name}.nii.gz"
+    destination = atlas / f"{name}.nii.gz"
     nib.save(nib.Nifti1Image(data, annotation.affine, annotation.header.copy()), destination)
     return destination
 
 
 def install_channel(import_report: dict) -> list[dict]:
-    """Stage every target, then activate all of them as one rollback-capable transaction."""
-    active = tifffile.memmap(ACTIVE_PATH)
+    active = tifffile.imread(ACTIVE_PATH)
     name = "waxholm_anatomy_reference"
-    staged: list[dict] = []
-    activated: list[tuple[Path, Path | None]] = []
-    try:
-        for atlas in atlas_candidates():
-            metadata_path = atlas / "metadata.json"
-            if not (metadata_path.is_file() and (atlas / "annotation.tiff").is_file() and
-                    (atlas / "annotation.nii.gz").is_file()):
-                continue
-            transaction = Path(tempfile.mkdtemp(prefix=".nissl-transaction-", dir=atlas))
-            targets = [atlas / f"{name}.tiff", atlas / f"{name}.nii.gz", metadata_path]
-            temp_tiff = transaction / targets[0].name
-            shutil.copy2(ACTIVE_PATH, temp_tiff)
-            temp_nifti = write_nifti(active, atlas, name, transaction)
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            references = metadata.get("additional_references", [])
-            if isinstance(references, str):
-                references = [references]
-            if name not in references:
-                references.append(name)
-            metadata["additional_references"] = references
-            metadata["optional_ch03_registration"] = {
-                "installed": True, "release": "0.3.0-prerelease", "reference_name": name,
-                "stack_order": import_report["stack_order"],
-                "target_sequence_offset": import_report["target_sequence_offset"],
-                "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
-            }
-            temp_metadata = transaction / "metadata.json"
-            temp_metadata.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-            json.loads(temp_metadata.read_text(encoding="utf-8"))
-            with tifffile.TiffFile(temp_tiff) as check:
-                if tuple(check.series[0].shape) != TARGET_SHAPE or check.series[0].dtype != np.dtype("uint16"):
-                    raise ValueError("staged TIFF geometry or dtype changed")
-            if tuple(nib.load(str(temp_nifti)).shape) != tuple(nib.load(str(atlas / "annotation.nii.gz")).shape):
-                raise ValueError("staged NIfTI shape changed")
-            staged.append({"atlas": atlas, "transaction": transaction, "targets": targets,
-                           "files": [temp_tiff, temp_nifti, temp_metadata]})
-        if not staged:
-            raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
-
-        for item in staged:
-            for staged_file, target in zip(item["files"], item["targets"]):
-                backup = item["transaction"] / (target.name + ".backup") if target.exists() else None
-                if backup:
-                    shutil.copy2(target, backup)
-                os.replace(staged_file, target)
-                activated.append((target, backup))
-        # Archive creation is inside the transaction: failure rolls all targets back.
-        repack_candidate()
-    except Exception:
-        for target, backup in reversed(activated):
-            if backup and backup.exists():
-                restore = backup.with_suffix(backup.suffix + ".restore")
-                shutil.copy2(backup, restore)
-                os.replace(restore, target)
-            else:
-                target.unlink(missing_ok=True)
-        raise
-    finally:
-        for item in staged:
-            shutil.rmtree(item["transaction"], ignore_errors=True)
-
-    installed = [{"atlas": str(item["atlas"]), "tiff": str(item["targets"][0]),
-                  "nifti": str(item["targets"][1])} for item in staged]
+    installed: list[dict] = []
+    for atlas in atlas_candidates():
+        metadata_path = atlas / "metadata.json"
+        if not (metadata_path.is_file() and (atlas / "annotation.tiff").is_file() and (atlas / "annotation.nii.gz").is_file()):
+            continue
+        tiff_path = atlas / f"{name}.tiff"
+        shutil.copy2(ACTIVE_PATH, tiff_path)
+        nifti_path = write_nifti(active, atlas, name)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        references = metadata.get("additional_references", [])
+        if isinstance(references, str): references = [references]
+        if name not in references: references.append(name)
+        metadata["additional_references"] = references
+        metadata["optional_ch03_registration"] = {
+            "installed": True, "release": "0.3.0-prerelease", "reference_name": name,
+            "stack_order": import_report["stack_order"],
+            "target_sequence_offset": import_report["target_sequence_offset"],
+            "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+        installed.append({"atlas": str(atlas), "tiff": str(tiff_path), "nifti": str(nifti_path)})
+    if not installed:
+        raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
     write_report({"ch03_install": installed})
     print(f"  Installed targets: {len(installed)}")
     return installed
@@ -365,27 +274,9 @@ def repack_candidate() -> Path:
     if not candidate.is_dir():
         raise FileNotFoundError(f"Official candidate is missing: {candidate}")
     archive = candidate.parent / f"{candidate.name}.tar.gz"
-    temporary_tar = archive.with_suffix(".tar.tmp")
-    temporary_gzip = archive.with_suffix(".gz.tmp")
-    for path in (temporary_tar, temporary_gzip):
-        path.unlink(missing_ok=True)
-    with tarfile.open(temporary_tar, "w") as output:
-        for path in [candidate, *sorted(candidate.rglob("*"), key=lambda item: item.as_posix())]:
-            info = output.gettarinfo(path, arcname=str(Path(candidate.name) / path.relative_to(candidate)))
-            info.mtime = 0
-            info.uid = info.gid = 0
-            info.uname = info.gname = ""
-            info.mode = 0o755 if path.is_dir() else 0o644
-            if path.is_file():
-                with path.open("rb") as stream:
-                    output.addfile(info, stream)
-            else:
-                output.addfile(info)
-    with temporary_tar.open("rb") as source, temporary_gzip.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-            shutil.copyfileobj(source, compressed)
-    os.replace(temporary_gzip, archive)
-    temporary_tar.unlink(missing_ok=True)
+    archive.unlink(missing_ok=True)
+    with tarfile.open(archive, "w:gz") as output:
+        output.add(candidate, arcname=candidate.name)
     write_report({"candidate_archive": {"path": str(archive), "sha256": sha256_file(archive)}})
     return archive
 
@@ -401,7 +292,7 @@ def build_from_package(package_path: str) -> int:
         manifest["anterior_edge_policy"],
     )
     install_channel(report)
-    archive = ROOT / "data" / "output" / "brainglobe_official_candidate" / "paxinos_watson_rat_40um.tar.gz"
+    archive = repack_candidate()
     print(f"  Candidate archive: {archive}")
     print("  Nissl channel build completed.")
     return 0

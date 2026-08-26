@@ -303,56 +303,13 @@ The 0.3.0 prerelease is ready for publication only after:
 6. representative levels pass visual ABBA QC;
 7. `reports\BUILD_SUMMARY.txt` reports success.
 
-## v0.3.1 stability controls
+## v0.3.1 incremental test build
 
-The 0.3.1 builder is an operational update only: the 0.3.0 Paxinos annotation,
-AP mapping, and validated registration manifest remain unchanged. Before creating
-the virtual environment it verifies 64-bit Python 3.11/3.12, free disk space,
-RAM, write access, path safety, and a single-instance lock. Failures include a
-stable code and a corrective hint in the build-specific `reports/builds/<BUILD_ID>/preflight.json`.
-
-For managed Python installations, select the interpreter explicitly and suppress
-all pauses (suitable for CI):
-
-```cmd
-run_builder.bat --python "C:\Python312\python.exe" --non-interactive
-```
-
-Dependencies are installed from `requirements.lock`. Winget failures commonly
-mean that App Installer is unavailable, UAC denied installation, or a new Python
-has not yet reached `PATH`; installing 64-bit Python manually and setting
-`PAXINOS_PYTHON` avoids all three cases.
-
-`--no-patch-abba` disables both visibility and native-border patches. Missing
-ABBA is a warning by default; use `--require-abba` when integration is mandatory.
-`--without-nissl` produces and reports a label-only atlas, without claiming that
-Ch. 3 was installed.
-
-Nissl downloads use retry, exponential backoff, partial-file resume, SHA-256
-reporting, and one automatic corrupt-cache repair. Error codes distinguish HTTP
-authorization/not-found, timeouts, proxy/TLS/network failures, checksum errors,
-and a full disk. ZIP extraction has path, count, type, compressed-size, and
-expanded-size limits. The exact state named by the package manifest is required,
-and release/package metadata plus TIFF shape, axes, dtype, and decoding are
-validated before use.
-
-### Isolated diagnostics and recovery
-
-Every invocation creates a unique ID under `reports\builds\<BUILD_ID>`. Commands
-run after virtual-environment creation are recorded in `steps.jsonl`, including
-the phase, exact argument vector, exit code, duration, and an individual log.
-`BUILD_LOG.txt` is the human-readable index. Nissl reports are copied into the
-same build directory, so a label-only run cannot consume a previous run's Nissl
-report.
-
-Nissl installation stages every candidate and installed atlas before activating
-any file. TIFF, NIfTI, and JSON are validated first. Activation or deterministic
-archive failure restores all targets already touched in that transaction.
-Temporary memmaps keep resampling, integer conversion, and floating-point
-percentile calculation off full-volume RAM copies.
-
-> Release gate: `requirements.lock` currently pins all direct dependencies, but
-> the final transitive, hash-locked file must be generated on a network-enabled
-> Python 3.11/3.12 release host and tested on Windows before v0.3.1 is published.
-> The repository must not be described as fully reproducible until that gate has
-> passed.
+Version 0.3.1 deliberately starts from the working 0.3.0 prerelease pipeline.
+It does not change the Paxinos annotation, ontology, AP mapping, or validated
+Nissl registration. This first increment only fixes optional-component control:
+`--no-patch-abba` disables both ABBA patches, missing ABBA is a warning unless
+`--require-abba` is supplied, `--without-nissl` is reported accurately, and
+`--non-interactive` suppresses `pause`. Broader preflight, transaction, locking,
+and dependency changes are intentionally deferred until this smaller Windows
+build has been validated.
