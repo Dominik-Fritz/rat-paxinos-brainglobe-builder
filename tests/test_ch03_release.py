@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+import shutil
 import zipfile
 
 import numpy as np
@@ -11,6 +13,7 @@ import tifffile
 
 from src import ch03_nissl_pipeline as pipeline
 from src import nissl_release_asset
+from src import storage_preflight
 
 
 class RegisteredStackTests(unittest.TestCase):
@@ -153,6 +156,38 @@ class IncrementalBuilderTests(unittest.TestCase):
         pause_lines = [line for line in batch.splitlines() if "pause" in line.lower()]
         self.assertTrue(pause_lines)
         self.assertTrue(all("NON_INTERACTIVE" in line for line in pause_lines))
+
+
+class StoragePreflightTests(unittest.TestCase):
+    def test_same_volume_is_deduplicated_with_all_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = storage_preflight.inspect_locations(
+                [("builder_root", root), ("temporary", root / "temp")], warn_gib=0, fail_gib=0
+            )
+            self.assertEqual(len(report["volumes"]), 1)
+            self.assertEqual(report["volumes"][0]["roles"], ["builder_root", "temporary"])
+
+    def test_low_space_warns_but_critical_space_fails(self) -> None:
+        usage = shutil._ntuple_diskusage(total=20 * 1024**3, used=16 * 1024**3, free=4 * 1024**3)
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(storage_preflight.shutil, "disk_usage", return_value=usage):
+            warning = storage_preflight.inspect_locations([("builder_root", Path(temporary))])
+            critical = storage_preflight.inspect_locations([("builder_root", Path(temporary))], fail_gib=5)
+        self.assertEqual(warning["status"], "warning")
+        self.assertEqual(critical["status"], "failed")
+
+
+class NisslDisplayDiagnosticTests(unittest.TestCase):
+    def test_edge_coverage_reports_without_modifying_pixels(self) -> None:
+        labels = np.zeros((2, 3, 4), dtype=np.uint16)
+        labels[:, 1:, 1:3] = 1
+        nissl = np.zeros_like(labels)
+        nissl[:, 1:, 1] = 10
+        before = nissl.copy()
+        report = pipeline.measure_edge_coverage(labels, nissl)
+        self.assertEqual(report["coverage_fraction_median"], 0.5)
+        self.assertFalse(report["pixels_modified"])
+        np.testing.assert_array_equal(nissl, before)
 
 
 if __name__ == "__main__":

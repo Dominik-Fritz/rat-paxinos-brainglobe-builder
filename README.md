@@ -313,3 +313,18 @@ Nissl registration. This first increment only fixes optional-component control:
 `--non-interactive` suppresses `pause`. Broader preflight, transaction, locking,
 and dependency changes are intentionally deferred until this smaller Windows
 build has been validated.
+
+### v0.3.1 next safety increment
+
+The builder reports free space separately for the volume containing the project,
+the configured BrainGlobe installation, and Windows temporary directories. Low
+space is initially a warning; only a critically full volume stops the build.
+Duplicate volumes are reported once with all of their roles.
+
+The Nissl importer now records per-plane edge-coverage diagnostics comparing the
+non-zero registered signal with the Paxinos label bounds. It does not stretch,
+fill, or re-register the validated images. Installed metadata includes a preferred
+warm-yellow (`#FFD54F`), low-opacity (`0.22`) display hint. This is deliberately a
+client hint: current ABBA versions may still require the converter color and
+opacity to be applied in the ABBA UI until a separately tested loader patch is
+available.

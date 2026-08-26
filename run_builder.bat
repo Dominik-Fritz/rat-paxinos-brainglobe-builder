@@ -105,6 +105,10 @@ echo [3B/30] Verifying pinned BrainGlobe compatibility runtime...
 "%VENV_PY%" -m pip check || goto fail
 
 echo.
+echo [3C/30] Checking free space on builder, BrainGlobe, and temporary volumes...
+"%VENV_PY%" "src\storage_preflight.py" --root "%BUILDER_ROOT%" || goto fail
+
+echo.
 echo [4/30] Running syntax smoke test...
 "%VENV_PY%" -B "src\release_syntax_check_no_pycache.py" || goto fail
 
