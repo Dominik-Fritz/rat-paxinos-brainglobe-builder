@@ -17,6 +17,7 @@ from src import nissl_release_asset
 from src import storage_preflight
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 import v25_clean_native_brainglobe_install as native_install
+from src import summarize_nissl_coverage
 
 
 class RegisteredStackTests(unittest.TestCase):
@@ -214,6 +215,25 @@ class NativeBackupTests(unittest.TestCase):
             self.assertFalse(legacy.exists())
             legacy_destination = Path(report["legacy_backup_items"][0]["to"])
             self.assertTrue((legacy_destination / "old.txt").is_file())
+
+
+class CoverageSummaryTests(unittest.TestCase):
+    def test_compact_summary_ranks_worst_plane_and_reports_insets(self) -> None:
+        report = {"ch03_import": {"edge_coverage": {
+            "plane_count": 2, "coverage_fraction_min": 0.5,
+            "coverage_fraction_median": 0.7, "coverage_fraction_max": 0.9,
+            "pixels_modified": False, "planes": [
+                {"ap": 10, "coverage_fraction": 0.9, "label_pixels": 10,
+                 "label_pixels_with_nissl_signal": 9,
+                 "label_bbox_si_lr": [[0, 0], [9, 9]], "nissl_signal_bbox_si_lr": [[0, 0], [9, 9]]},
+                {"ap": 11, "coverage_fraction": 0.5, "label_pixels": 10,
+                 "label_pixels_with_nissl_signal": 5,
+                 "label_bbox_si_lr": [[0, 0], [9, 9]], "nissl_signal_bbox_si_lr": [[2, 1], [8, 7]]},
+            ]}}}
+        text = summarize_nissl_coverage.summarize(report, worst_count=1)
+        self.assertIn("AP 11", text)
+        self.assertIn("si_min_inset': 2", text)
+        self.assertNotIn("AP 10:", text)
 
 
 if __name__ == "__main__":

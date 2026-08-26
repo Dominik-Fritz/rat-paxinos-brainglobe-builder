@@ -334,3 +334,12 @@ BrainGlobe directory (usually on `C:`). Existing and newly created native-atlas
 backups are moved, never deleted, under `backups/native_brainglobe` on the builder
 volume. This preserves rollback material while freeing the installation volume
 for the new atlas and its display channels.
+
+The large per-plane Nissl diagnostic can be reduced to a small text file with:
+
+```cmd
+.venv\Scripts\python.exe src\summarize_nissl_coverage.py --root .
+```
+
+Share `reports\ch03_nissl\NISSL_EDGE_COVERAGE_SUMMARY.txt`; the full JSON is not
+needed for initial edge-gap analysis.
