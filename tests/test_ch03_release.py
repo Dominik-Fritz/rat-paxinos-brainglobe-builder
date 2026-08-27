@@ -63,6 +63,62 @@ class RegisteredStackTests(unittest.TestCase):
                     setattr(pipeline, name, value)
 
 
+class WaxholmSourceTests(unittest.TestCase):
+    def manifest(self):
+        return {
+            "waxholm_atlas_name": "whs_sd_rat_39um",
+            "waxholm_dataset_version": "4.0",
+            "waxholm_brainglobe_package_version": "1.01",
+            "waxholm_reference_shape_ap_si_lr": [4, 2, 3],
+            "waxholm_orientation": "asr",
+        }
+
+    def write_atlas(self, root: Path, version="1.01", orientation="asr") -> Path:
+        atlas = root / "whs_sd_rat_39um_v1.01"
+        atlas.mkdir(parents=True)
+        (atlas / "metadata.json").write_text(
+            json.dumps({"version": version, "orientation": orientation}), encoding="utf-8"
+        )
+        tifffile.imwrite(atlas / "reference.tiff", np.zeros((4, 2, 3), dtype=np.uint16))
+        return atlas
+
+    def test_missing_cache_is_downloaded_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlas = self.write_atlas(root)
+            fake = mock.Mock(brainglobe_dir=root, local_full_name=atlas.name)
+            # Simulate that the downloader creates the atlas during construction.
+            shutil.rmtree(atlas)
+            def download(*args, **kwargs):
+                created = self.write_atlas(root)
+                fake.local_full_name = created.name
+                return fake
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root), \
+                    mock.patch.object(pipeline, "BrainGlobeAtlas", side_effect=download) as constructor:
+                source, report = pipeline.find_waxholm_source(self.manifest())
+            constructor.assert_called_once_with("whs_sd_rat_39um", brainglobe_dir=root, check_latest=True)
+            self.assertTrue(source.is_file())
+            self.assertEqual(report["source_kind"], "downloaded and validated by BrainGlobe AtlasAPI")
+
+    def test_wrong_downloaded_package_version_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            other = root / "whs_sd_rat_39um_v2.0"
+            fake = mock.Mock(brainglobe_dir=root, local_full_name=other.name)
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root), \
+                    mock.patch.object(pipeline, "BrainGlobeAtlas", return_value=fake):
+                with self.assertRaisesRegex(pipeline.NisslBuildError, "WHS_VERSION"):
+                    pipeline.find_waxholm_source(self.manifest())
+
+    def test_wrong_orientation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_atlas(root, orientation="pir")
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root):
+                with self.assertRaisesRegex(pipeline.NisslBuildError, "WHS_ORIENTATION"):
+                    pipeline.find_waxholm_source(self.manifest())
+
+
 class ReleaseAssetTests(unittest.TestCase):
     def test_embedded_registration_package_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

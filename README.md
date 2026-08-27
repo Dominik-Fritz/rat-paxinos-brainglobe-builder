@@ -124,7 +124,8 @@ Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
 `e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`) is the
 authoritative registration input. The builder strictly validates its 588
 sources, action chains and ThinplateSpline transforms, then reconstructs the
-channel plane-by-plane from the pinned BrainGlobe `whs_sd_rat_39um` v4.0
+channel plane-by-plane from Waxholm dataset v4.0 as distributed in the pinned
+BrainGlobe `whs_sd_rat_39um` package v1.01
 reference directly on the `(608, 286, 409)` AP/SI/LR grid. The historical
 `registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
 normal build inputs or silent fallbacks; they may only be supplied separately
@@ -180,6 +181,13 @@ A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
 wrong source mapping, wrong Waxholm cache version/shape, or ambiguous AP
 direction aborts the build. The historical BDV `project.qpproj` path is retained
 as provenance only and is never opened.
+
+If the pinned Waxholm package is not yet present in the configured BrainGlobe
+directory, phase 5 downloads it automatically through BrainGlobe AtlasAPI. A
+normal first build therefore requires network access; subsequent builds reuse
+the version-, metadata-, orientation- and shape-validated cache. Network/GIN
+failures, an incomplete cache and a different downloaded package version have
+distinct error codes and remediation messages.
 
 ### Preparing the release asset
 

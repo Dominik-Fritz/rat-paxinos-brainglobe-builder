@@ -12,5 +12,10 @@ Optional provenance files may also be added:
 - `project.qpproj`
 - `project.qpproj.backup`
 
-The builder does not read any path outside this package and does not use
-`G:\nissl_registration`.
+The builder never follows the historical `G:\nissl_registration` project path;
+outside this package it reads only its normal generated atlas files and the
+separately validated BrainGlobe Waxholm cache.
+
+The independently versioned Waxholm image volume is downloaded automatically
+through BrainGlobe AtlasAPI on the first build and subsequently read from the
+validated BrainGlobe cache; it is intentionally not duplicated in this folder.

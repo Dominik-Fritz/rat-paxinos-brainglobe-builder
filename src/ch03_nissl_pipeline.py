@@ -20,6 +20,7 @@ from typing import Iterable
 import nibabel as nib
 import numpy as np
 import tifffile
+from brainglobe_atlasapi import BrainGlobeAtlas
 from brainglobe_atlasapi import config as brainglobe_config
 from scipy import ndimage
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -104,8 +105,9 @@ def load_package_manifest(package: Path) -> dict:
         raise FileNotFoundError(f"Required package manifest is missing: {path}")
     manifest = json.loads(path.read_text(encoding="utf-8"))
     required = {"abba_state_file", "abba_state_sha256", "stack_order", "target_sequence_offset",
-                "anterior_edge_policy", "waxholm_atlas_name", "waxholm_atlas_version",
-                "waxholm_reference_shape_ap_si_lr", "waxholm_ap_direction"}
+                "anterior_edge_policy", "waxholm_atlas_name", "waxholm_dataset_version",
+                "waxholm_brainglobe_package_version", "waxholm_reference_shape_ap_si_lr",
+                "waxholm_orientation", "waxholm_ap_direction"}
     missing = sorted(required - manifest.keys())
     if missing:
         raise ValueError(f"Package manifest is missing fields: {missing}")
@@ -141,24 +143,47 @@ def inspect_package(package: Path, manifest: dict) -> dict:
 
 
 def find_waxholm_source(manifest: dict) -> tuple[Path, dict]:
-    """Resolve only the exactly pinned BrainGlobe cache; AtlasAPI owns download validation."""
+    """Download when needed, then resolve only the exactly pinned BrainGlobe atlas."""
     root = Path(brainglobe_config.get_brainglobe_dir())
-    name, version = manifest["waxholm_atlas_name"], manifest["waxholm_atlas_version"]
-    atlas = root / f"{name}_v{version}"
+    name = manifest["waxholm_atlas_name"]
+    package_version = manifest["waxholm_brainglobe_package_version"]
+    expected_folder = root / f"{name}_v{package_version}"
+    source_kind = "verified BrainGlobe cache"
+    if not expected_folder.is_dir():
+        print(f"  Waxholm source   : downloading {name} package v{package_version} via BrainGlobe AtlasAPI...")
+        try:
+            downloaded = BrainGlobeAtlas(name, brainglobe_dir=root, check_latest=True)
+        except Exception as exc:
+            raise NisslBuildError(
+                "WHS_NETWORK",
+                f"BrainGlobe could not download {name} v{package_version}. Check network/GIN availability: {exc}",
+            ) from exc
+        atlas = Path(downloaded.brainglobe_dir) / str(downloaded.local_full_name)
+        source_kind = "downloaded and validated by BrainGlobe AtlasAPI"
+        if atlas.name != expected_folder.name:
+            raise NisslBuildError(
+                "WHS_VERSION",
+                f"BrainGlobe supplied {atlas.name}, but this release requires {expected_folder.name}",
+            )
+    else:
+        atlas = expected_folder
     metadata_path, source = atlas / "metadata.json", atlas / "reference.tiff"
-    if not atlas.is_dir():
-        raise NisslBuildError("WHS_DOWNLOAD_MISSING", f"install pinned BrainGlobe atlas {name} v{version} first")
     if not metadata_path.is_file() or not source.is_file():
         raise NisslBuildError("WHS_CACHE_CORRUPT", f"incomplete BrainGlobe cache: {atlas}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    observed = str(metadata.get("version", metadata.get("atlas_version", "")))
-    if observed and observed != version:
-        raise NisslBuildError("WHS_VERSION", f"expected {name} v{version}, metadata reports {observed}")
+    observed = str(metadata.get("version", metadata.get("atlas_version", package_version)))
+    if observed != package_version:
+        raise NisslBuildError("WHS_VERSION", f"expected BrainGlobe package v{package_version}, metadata reports {observed}")
+    orientation = str(metadata.get("orientation", "")).lower()
+    if orientation != manifest["waxholm_orientation"]:
+        raise NisslBuildError("WHS_ORIENTATION", f"expected orientation {manifest['waxholm_orientation']}, got {orientation!r}")
     with tifffile.TiffFile(source) as tif:
         shape = tuple(tif.series[0].shape)
     if shape != tuple(manifest["waxholm_reference_shape_ap_si_lr"]):
         raise NisslBuildError("WHS_SOURCE_SHAPE", f"expected AP/SI/LR {manifest['waxholm_reference_shape_ap_si_lr']}, got {shape}")
-    return source, {"atlas_name": name, "atlas_version": version, "path": str(source),
+    return source, {"atlas_name": name, "dataset_version": manifest["waxholm_dataset_version"],
+                    "brainglobe_package_version": package_version, "source_kind": source_kind,
+                    "path": str(source), "orientation": orientation,
                     "sha256": strict_sha256(source), "shape_ap_si_lr": list(shape),
                     "ap_range": [189, 776], "ap_direction": "anterior-to-posterior"}
 
