@@ -22,7 +22,7 @@ def locate_installed_atlas() -> Path | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
-    parser.add_argument("--status", choices=("success", "failed"), required=True)
+    parser.add_argument("--status", choices=("success", "warnings", "failed"), required=True)
     parser.add_argument("--stage", default="Completed")
     parser.add_argument("--started", default="unknown")
     parser.add_argument("--nissl", default="YES")
@@ -39,15 +39,17 @@ def main() -> int:
     if isinstance(refs, str):
         refs = [refs]
     nissl_installed = bool(atlas and (atlas / "waxholm_anatomy_reference.tiff").is_file())
+    nissl_requested = args.nissl.upper() == "YES"
     ch03_report_path = reports / "ch03_nissl" / "ch03_nissl_report.json"
     ch03_report = (
-        json.loads(ch03_report_path.read_text(encoding="utf-8")) if ch03_report_path.is_file() else {}
+        json.loads(ch03_report_path.read_text(encoding="utf-8"))
+        if nissl_requested and ch03_report_path.is_file() else {}
     )
     import_report = ch03_report.get("ch03_import", {})
     lines = [
         "Rat Paxinos/Watson Atlas Builder - Build Summary",
         "=" * 72,
-        f"Status: {args.status.upper()}",
+        f"Status: {'SUCCESS WITH WARNINGS' if args.status == 'warnings' else args.status.upper()}",
         f"Started: {args.started}",
         f"Finished: {datetime.now().isoformat(timespec='seconds')}",
         f"Last stage: {args.stage}",
@@ -56,7 +58,7 @@ def main() -> int:
         "-" * 72,
         f"Atlas: {atlas if atlas else 'not located'}",
         f"Paxinos annotation: {'present' if atlas and (atlas / 'annotation.tiff').is_file() else 'not confirmed'}",
-        f"Registered Nissl channel: {'present' if nissl_installed else 'not present'}",
+        f"Registered Nissl channel: {'present' if nissl_requested and nissl_installed else 'disabled for this build' if not nissl_requested else 'not present'}",
         f"Nissl AP order: {import_report.get('stack_order', 'not recorded')}",
         f"Mapped Nissl planes: {import_report.get('mapped_plane_count', 'not recorded')}",
         f"Target sequence offset: {import_report.get('target_sequence_offset', 'not recorded')}",

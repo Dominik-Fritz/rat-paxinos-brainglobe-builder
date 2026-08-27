@@ -302,3 +302,59 @@ The 0.3.0 prerelease is ready for publication only after:
 5. Ch. 0 and Ch. 3 have the same AP direction;
 6. representative levels pass visual ABBA QC;
 7. `reports\BUILD_SUMMARY.txt` reports success.
+
+## v0.3.1 incremental test build
+
+Version 0.3.1 deliberately starts from the working 0.3.0 prerelease pipeline.
+It does not change the Paxinos annotation, ontology, AP mapping, or validated
+Nissl registration. This first increment only fixes optional-component control:
+`--no-patch-abba` disables both ABBA patches, missing ABBA is a warning unless
+`--require-abba` is supplied, `--without-nissl` is reported accurately, and
+`--non-interactive` suppresses `pause`. Broader preflight, transaction, locking,
+and dependency changes are intentionally deferred until this smaller Windows
+build has been validated.
+
+### v0.3.1 next safety increment
+
+The builder reports free space separately for the volume containing the project,
+the configured BrainGlobe installation, and Windows temporary directories. Low
+space is initially a warning; only a critically full volume stops the build.
+Duplicate volumes are reported once with all of their roles.
+
+The Nissl importer now records per-plane edge-coverage diagnostics comparing the
+non-zero registered signal with the Paxinos label bounds. It does not stretch,
+fill, or re-register the validated images. Installed metadata includes a preferred
+warm-yellow (`#FFD54F`), low-opacity (`0.22`) display hint. This is deliberately a
+client hint: current ABBA versions may still require the converter color and
+opacity to be applied in the ABBA UI until a separately tested loader patch is
+available.
+
+Repeated clean installations no longer accumulate full atlas backups inside the
+BrainGlobe directory (usually on `C:`). Existing and newly created native-atlas
+backups are moved, never deleted, under `backups/native_brainglobe` on the builder
+volume. This preserves rollback material while freeing the installation volume
+for the new atlas and its display channels.
+
+The large per-plane Nissl diagnostic can be reduced to a small text file with:
+
+```cmd
+.venv\Scripts\python.exe src\summarize_nissl_coverage.py --root .
+```
+
+Share `reports\ch03_nissl\NISSL_EDGE_COVERAGE_SUMMARY.txt`; the full JSON is not
+needed for initial edge-gap analysis.
+
+A critically full required volume (below 0.5 GiB) still stops the build to avoid
+partial atlas files. Before this check, legacy full-atlas backups are now moved
+from the BrainGlobe directory to the builder-volume backup tree. If Windows
+`TEMP` remains on a full `C:` drive, it can be redirected for one terminal:
+
+```cmd
+mkdir G:\paxinos_temp
+set "TEMP=G:\paxinos_temp"
+set "TMP=G:\paxinos_temp"
+run_builder.bat
+```
+
+The BrainGlobe installation itself still needs sufficient free space on its
+configured volume; redirecting only `TEMP` does not move the installed atlas.
