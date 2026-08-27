@@ -76,7 +76,7 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "test.zip",
                         "download_url": "",
                         "sha256": "",
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",
@@ -84,8 +84,8 @@ class ReleaseAssetTests(unittest.TestCase):
             package = root / "resources" / "optional_ch03" / "nissl_registration_0_3_0"
             package.mkdir()
             (package / "final.abba").write_text("{}", encoding="utf-8")
+            manifest = json.loads(manifest_path.read_text()); manifest["expected_abba_sha256"] = nissl_release_asset.sha256_file(package / "final.abba"); manifest_path.write_text(json.dumps(manifest))
             (package / "registration_manifest.json").write_text("{}", encoding="utf-8")
-            (package / "registered_slices_ImageJ_stack.tif").write_bytes(b"test")
             self.assertEqual(nissl_release_asset.resolve(root), package.resolve())
             self.assertTrue((root / "reports/nissl_release_asset/nissl_release_asset_summary.txt").is_file())
 
@@ -98,7 +98,7 @@ class ReleaseAssetTests(unittest.TestCase):
             with zipfile.ZipFile(source_zip, "w") as archive:
                 archive.writestr("final.abba", "{}")
                 archive.writestr("registration_manifest.json", "{}")
-                archive.writestr("registered_slices_ImageJ_stack.tif", "test")
+                archive.writestr("unused-legacy-stack.tif", "test")
             digest = nissl_release_asset.sha256_file(source_zip)
             manifest_path = root / nissl_release_asset.MANIFEST_RELATIVE
             manifest_path.parent.mkdir(parents=True)
@@ -109,14 +109,14 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "test.zip",
                         "download_url": source_zip.as_uri(),
                         "sha256": digest,
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",
             )
             package = nissl_release_asset.resolve(root)
             self.assertTrue((package / "final.abba").is_file())
-            self.assertTrue((package / "registered_slices_ImageJ_stack.tif").is_file())
+            self.assertFalse((package / "registered_slices_ImageJ_stack.tif").is_file())
 
     def test_pin_asset_records_url_and_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -130,7 +130,7 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "old.zip",
                         "download_url": "",
                         "sha256": "",
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",

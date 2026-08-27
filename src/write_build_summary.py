@@ -72,6 +72,9 @@ def main() -> int:
         "-" * 72,
         "The Paxinos annotation remains authoritative for region assignment.",
         "The registered Waxholm Nissl channel is a non-authoritative visual aid.",
+        ("The Nissl channel was reconstructed from the immutable, versioned ABBA state and the "
+         "pinned Waxholm source; no pre-rendered v0.3.0 stack was used." if nissl_installed else
+         "No reconstructed Nissl channel was installed."),
         "",
         f"Detailed reports: {reports}",
     ]

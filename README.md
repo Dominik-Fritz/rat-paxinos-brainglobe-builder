@@ -120,11 +120,15 @@ positions 1 through 588. Because no separately registered anterior edge image
 exists, position zero displays a documented duplicate of the nearest registered
 section. No interpolation or new registration is performed.
 
-The ImageJ export has the shape `(588, 656, 940)` at an in-plane calibration of
-19.5 µm. The atlas TIFF grid is `(608, 286, 409)` in AP/SI/LR order at 40 µm.
-The importer samples the centered physical ImageJ canvas onto the Paxinos grid.
-This is a calibrated grid conversion, not a new anatomical registration; the
-manually defined BigWarp transformations remain unchanged.
+Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
+`e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`) is the
+authoritative registration input. The builder strictly validates its 588
+sources, action chains and ThinplateSpline transforms, then reconstructs the
+channel plane-by-plane from the pinned BrainGlobe `whs_sd_rat_39um` v4.0
+reference directly on the `(608, 286, 409)` AP/SI/LR grid. The historical
+`registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
+normal build inputs or silent fallbacks; they may only be supplied separately
+for numerical/visual v0.3.0 comparison.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
@@ -147,13 +151,12 @@ Consequently:
 - Ch. 3 is an orientation and visualization aid.
 - Paxinos labels remain authoritative for region assignment.
 - Nissl boundaries must not be interpreted as replacement region boundaries.
-- The source images, ABBA state, transform exports, ImageJ stack, checksums, and
+- The source images, ABBA state, transform reports, checksums, and
   build reports form the registration provenance record.
 
 ## Reproducible GitHub release asset
 
-The complete ABBA/QuPath package is too large for normal Git history. It is
-distributed as a GitHub release asset and described by:
+The compact immutable ABBA ZIP is committed and described by:
 
 ```text
 resources\optional_ch03\nissl_release_asset.json
@@ -165,7 +168,7 @@ The manifest pins:
 - asset filename;
 - direct release download URL;
 - SHA-256 checksum;
-- expected stack filename, shape, and AP order.
+- exact ABBA filename/hash, source range, AP direction and edge policy.
 
 The builder stores verified downloads under:
 
@@ -173,9 +176,10 @@ The builder stores verified downloads under:
 data\release_assets\0.3.0-prerelease\
 ```
 
-A partial or checksum-mismatched download is rejected. ZIP extraction is also
-checked for unsafe paths. A package is accepted only if it contains exactly one
-registered ImageJ stack and at least one ABBA state file.
+A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
+wrong source mapping, wrong Waxholm cache version/shape, or ambiguous AP
+direction aborts the build. The historical BDV `project.qpproj` path is retained
+as provenance only and is never opened.
 
 ### Preparing the release asset
 

@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+import sys
 import tarfile
 from typing import Iterable
 
@@ -21,6 +22,8 @@ import numpy as np
 import tifffile
 from brainglobe_atlasapi import config as brainglobe_config
 from scipy import ndimage
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from abba_nissl import NisslBuildError, render_volume, sha256_file as strict_sha256, validate_abba
 
 ROOT = Path(__file__).resolve().parents[1]
 OPTIONAL_DIR = ROOT / "resources" / "optional_ch03"
@@ -100,7 +103,9 @@ def load_package_manifest(package: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Required package manifest is missing: {path}")
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    required = {"stack_file", "state_file", "stack_order", "target_sequence_offset", "anterior_edge_policy"}
+    required = {"abba_state_file", "abba_state_sha256", "stack_order", "target_sequence_offset",
+                "anterior_edge_policy", "waxholm_atlas_name", "waxholm_atlas_version",
+                "waxholm_reference_shape_ap_si_lr", "waxholm_ap_direction"}
     missing = sorted(required - manifest.keys())
     if missing:
         raise ValueError(f"Package manifest is missing fields: {missing}")
@@ -111,7 +116,9 @@ def load_package_manifest(package: Path) -> dict:
         raise ValueError("target_sequence_offset must be 0 or 1 for the accepted 588/589 sequence.")
     if manifest["anterior_edge_policy"] not in {"leave_empty", "duplicate_first_registered_plane"}:
         raise ValueError(f"Invalid anterior_edge_policy: {manifest['anterior_edge_policy']}")
-    for field in ("stack_file", "state_file"):
+    if manifest["waxholm_ap_direction"] != "anterior-to-posterior":
+        raise ValueError("The pinned Waxholm AP direction must be anterior-to-posterior.")
+    for field in ("abba_state_file",):
         candidate = package / str(manifest[field])
         if not candidate.is_file():
             raise FileNotFoundError(f"Manifest file {field} is missing: {candidate}")
@@ -119,26 +126,41 @@ def load_package_manifest(package: Path) -> dict:
 
 
 def inspect_package(package: Path, manifest: dict) -> dict:
-    stack = package / manifest["stack_file"]
-    state = package / manifest["state_file"]
-    with tifffile.TiffFile(stack) as tif:
-        series = tif.series[0]
-        stack_info = {
-            "path": str(stack), "sha256": sha256_file(stack),
-            "shape": [int(v) for v in series.shape], "axes": series.axes,
-            "dtype": str(series.dtype), "is_imagej": bool(tif.is_imagej),
-        }
+    state = package / manifest["abba_state_file"]
+    parsed = validate_abba(state, manifest["abba_state_sha256"])
     result = {
         "package": str(package), "manifest": manifest,
-        "stack": stack_info,
         "state": {"path": str(state), "sha256": sha256_file(state), "bytes": state.stat().st_size},
+        "abba_validation": parsed.report,
     }
     write_report({"package_inventory": result})
     print(f"  Package manifest : {package / PACKAGE_MANIFEST_NAME}")
-    print(f"  Registered stack : {stack.name}  shape={tuple(stack_info['shape'])}")
     print(f"  ABBA state       : {state.name}")
     print(f"  Sequence offset  : {manifest['target_sequence_offset']:+d} target position")
     return result
+
+
+def find_waxholm_source(manifest: dict) -> tuple[Path, dict]:
+    """Resolve only the exactly pinned BrainGlobe cache; AtlasAPI owns download validation."""
+    root = Path(brainglobe_config.get_brainglobe_dir())
+    name, version = manifest["waxholm_atlas_name"], manifest["waxholm_atlas_version"]
+    atlas = root / f"{name}_v{version}"
+    metadata_path, source = atlas / "metadata.json", atlas / "reference.tiff"
+    if not atlas.is_dir():
+        raise NisslBuildError("WHS_DOWNLOAD_MISSING", f"install pinned BrainGlobe atlas {name} v{version} first")
+    if not metadata_path.is_file() or not source.is_file():
+        raise NisslBuildError("WHS_CACHE_CORRUPT", f"incomplete BrainGlobe cache: {atlas}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    observed = str(metadata.get("version", metadata.get("atlas_version", "")))
+    if observed and observed != version:
+        raise NisslBuildError("WHS_VERSION", f"expected {name} v{version}, metadata reports {observed}")
+    with tifffile.TiffFile(source) as tif:
+        shape = tuple(tif.series[0].shape)
+    if shape != tuple(manifest["waxholm_reference_shape_ap_si_lr"]):
+        raise NisslBuildError("WHS_SOURCE_SHAPE", f"expected AP/SI/LR {manifest['waxholm_reference_shape_ap_si_lr']}, got {shape}")
+    return source, {"atlas_name": name, "atlas_version": version, "path": str(source),
+                    "sha256": strict_sha256(source), "shape_ap_si_lr": list(shape),
+                    "ap_range": [189, 776], "ap_direction": "anterior-to-posterior"}
 
 
 def resample_abba_canvas(stack: np.ndarray) -> tuple[np.ndarray, str]:
@@ -327,10 +349,24 @@ def build_from_package(package_path: str) -> int:
     print("\n  [NISSL PACKAGE]")
     print("  " + "-" * 66)
     inspect_package(package, manifest)
-    report = import_registered_stack(
-        package / manifest["stack_file"], manifest["stack_order"], int(manifest["target_sequence_offset"]),
-        manifest["anterior_edge_policy"],
-    )
+    state = validate_abba(package / manifest["abba_state_file"], manifest["abba_state_sha256"])
+    source_path, source_report = find_waxholm_source(manifest)
+    source = tifffile.memmap(source_path)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    raw = REPORT_DIR / "waxholm_anatomy_reference.raw.partial"
+    reconstruction = render_volume(state, source, raw)
+    volume = np.memmap(raw, mode="r", dtype=np.uint16, shape=TARGET_SHAPE)
+    temporary_tiff = ACTIVE_PATH.with_suffix(".tiff.partial")
+    tifffile.imwrite(temporary_tiff, volume, bigtiff=True)
+    if tuple(tifffile.TiffFile(temporary_tiff).series[0].shape) != TARGET_SHAPE:
+        raise NisslBuildError("OUTPUT_VALIDATION", "temporary TIFF shape validation failed")
+    temporary_tiff.replace(ACTIVE_PATH)
+    raw.unlink(missing_ok=True)
+    report = {"source": source_report, "reconstruction": reconstruction,
+              "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
+              "authoritative_registration_source": str(state.path),
+              "legacy_registered_stack_used": False}
+    write_report({"abba_reconstruction": report})
     install_channel(report)
     archive = repack_candidate()
     print(f"  Candidate archive: {archive}")
