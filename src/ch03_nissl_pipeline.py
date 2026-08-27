@@ -164,6 +164,38 @@ def resample_abba_canvas(stack: np.ndarray) -> tuple[np.ndarray, str]:
     return converted, "centered 19.5-um ABBA canvas sampled on the 40-um Paxinos grid"
 
 
+def measure_edge_coverage(labels: np.ndarray, nissl: np.ndarray) -> dict:
+    """Measure visible Nissl support against label bounds without altering pixels."""
+    planes = []
+    coverages = []
+    for ap in np.flatnonzero(np.any(labels != 0, axis=(1, 2))):
+        label_mask = labels[ap] != 0
+        signal_mask = nissl[ap] > 0
+        label_pixels = int(label_mask.sum())
+        covered = int(np.logical_and(label_mask, signal_mask).sum())
+        coverage = covered / label_pixels if label_pixels else 0.0
+        coverages.append(coverage)
+        label_coords = np.argwhere(label_mask)
+        signal_coords = np.argwhere(signal_mask)
+        label_bbox = [label_coords.min(axis=0).tolist(), label_coords.max(axis=0).tolist()]
+        signal_bbox = ([signal_coords.min(axis=0).tolist(), signal_coords.max(axis=0).tolist()]
+                       if signal_coords.size else None)
+        planes.append({"ap": int(ap), "label_pixels": label_pixels,
+                       "label_pixels_with_nissl_signal": covered,
+                       "coverage_fraction": round(coverage, 6),
+                       "label_bbox_si_lr": label_bbox,
+                       "nissl_signal_bbox_si_lr": signal_bbox})
+    return {
+        "definition": "Fraction of labeled pixels containing non-zero Nissl signal; diagnostic only.",
+        "plane_count": len(planes),
+        "coverage_fraction_min": round(min(coverages), 6) if coverages else None,
+        "coverage_fraction_median": round(float(np.median(coverages)), 6) if coverages else None,
+        "coverage_fraction_max": round(max(coverages), 6) if coverages else None,
+        "planes": planes,
+        "pixels_modified": False,
+    }
+
+
 def import_registered_stack(
     source: Path, stack_order: str, target_sequence_offset: int,
     anterior_edge_policy: str = "duplicate_first_registered_plane",
@@ -217,6 +249,7 @@ def import_registered_stack(
             "before": int(start), "after": int(fixed_ap.size - start - target_ap.size),
         },
         "spatial_mapping": spatial_mapping, "active_tiff": str(ACTIVE_PATH),
+        "edge_coverage": measure_edge_coverage(labels, volume),
     }
     write_report({"ch03_import": report})
     print(f"  AP mapping       : offset {start:+d}; {target_ap.size} planes -> AP {target_ap[0]}..{target_ap[-1]}")
@@ -259,6 +292,13 @@ def install_channel(import_report: dict) -> list[dict]:
             "stack_order": import_report["stack_order"],
             "target_sequence_offset": import_report["target_sequence_offset"],
             "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
+            "display_preferences": {
+                "color_hex": "FFD54F",
+                "color_name": "warm yellow",
+                "opacity": 0.22,
+                "status": "client_hint",
+                "note": "Preferred ABBA display only; clients may require applying this converter setting manually.",
+            },
         }
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
         installed.append({"atlas": str(atlas), "tiff": str(tiff_path), "nifti": str(nifti_path)})

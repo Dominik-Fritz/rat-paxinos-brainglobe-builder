@@ -2,7 +2,7 @@
 set "PYTHONDONTWRITEBYTECODE=1"
 setlocal EnableExtensions EnableDelayedExpansion
 
-title Rat Paxinos 0.3.0 Atlas Builder
+title Rat Paxinos 0.3.1 Atlas Builder
 cd /d "%~dp0"
 set "BUILDER_ROOT=%~dp0."
 set "BUILD_STARTED=%DATE% %TIME%"
@@ -12,7 +12,7 @@ echo.
 echo +======================================================================+
 echo ^|                                                                      ^|
 echo ^|              RAT PAXINOS / WATSON ATLAS BUILDER                     ^|
-echo ^|                         0.3.0 PRERELEASE                             ^|
+echo ^|                         0.3.1 TEST BUILD                             ^|
 echo ^|                                                                      ^|
 echo +======================================================================+
 echo.
@@ -27,11 +27,16 @@ set "REQ_FILE=requirements.txt"
 set "PATCH_ABBA=YES"
 set "WITH_NISSL=YES"
 set "NISSL_PACKAGE="
+set "NON_INTERACTIVE=NO"
+set "REQUIRE_ABBA=NO"
+set "BUILD_WARNINGS=NO"
 
 for %%A in (%*) do (
     if /I "%%~A"=="--patch-abba" set "PATCH_ABBA=YES"
     if /I "%%~A"=="--no-patch-abba" set "PATCH_ABBA=NO"
     if /I "%%~A"=="--without-nissl" set "WITH_NISSL=NO"
+    if /I "%%~A"=="--non-interactive" set "NON_INTERACTIVE=YES"
+    if /I "%%~A"=="--require-abba" set "REQUIRE_ABBA=YES"
 )
 
 call :phase "1/6" "Runtime and dependency setup"
@@ -98,6 +103,10 @@ echo.
 echo [3B/30] Verifying pinned BrainGlobe compatibility runtime...
 "%VENV_PY%" -c "import importlib.metadata as m; v=m.version('brainglobe-atlasapi'); print('brainglobe-atlasapi=',v); raise SystemExit(0 if v=='2.3.1' else 1)" || goto fail
 "%VENV_PY%" -m pip check || goto fail
+
+echo.
+echo [3C/30] Checking free space on builder, BrainGlobe, and temporary volumes...
+"%VENV_PY%" "src\storage_preflight.py" --root "%BUILDER_ROOT%" || goto fail
 
 echo.
 echo [4/30] Running syntax smoke test...
@@ -256,40 +265,49 @@ if /I "%WITH_NISSL%"=="NO" (
 call :phase "6/6" "ABBA integration and final report"
 echo.
 echo [25/30] Optional ABBA visibility patch...
-if /I "%PATCH_ABBA%"=="ASK" (
-    choice /C YN /M "Patch ABBA installations so local BrainGlobe atlases appear in ABBA?"
-    if errorlevel 2 (set "PATCH_ABBA=NO") else (set "PATCH_ABBA=YES")
-)
 if /I "%PATCH_ABBA%"=="YES" (
-    "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all || goto fail
-) else (
-    echo Skipping ABBA patch.
-)
+    "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all
+    set "ABBA_V17_EXIT=!ERRORLEVEL!"
+    if not "!ABBA_V17_EXIT!"=="0" (
+        echo WARNING [ABBA_NOT_FOUND]: ABBA visibility patch was not applied.
+        set "BUILD_WARNINGS=YES"
+        if /I "%REQUIRE_ABBA%"=="YES" goto fail
+    )
 
-echo.
-echo [26/30] Hiding native ABBA borders display source...
-if not exist "src\v44_patch_abba_python_hide_native_borders.py" (
-    echo ERROR: Missing src\v44_patch_abba_python_hide_native_borders.py
-    echo Extract/apply the V44 file before running this builder.
-    goto fail
-)
-"%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
-if errorlevel 1 (
-    echo Normal ABBA Python discovery failed. Trying deep search...
-    "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --deep-search --fail-if-none || goto fail
+    echo.
+    echo [26/30] Hiding native ABBA borders display source...
+    "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --fail-if-none
+    set "ABBA_V44_EXIT=!ERRORLEVEL!"
+    if not "!ABBA_V44_EXIT!"=="0" (
+        echo Normal ABBA discovery failed. Trying deep search...
+        "%VENV_PY%" "src\v44_patch_abba_python_hide_native_borders.py" --root "%BUILDER_ROOT%" --apply --patch-all --deep-search --fail-if-none
+        set "ABBA_V44_EXIT=!ERRORLEVEL!"
+    )
+    if not "!ABBA_V44_EXIT!"=="0" (
+        echo WARNING [ABBA_NOT_FOUND]: Native-border patch was not applied.
+        set "BUILD_WARNINGS=YES"
+        if /I "%REQUIRE_ABBA%"=="YES" goto fail
+    )
+) else (
+    echo All ABBA patches disabled by --no-patch-abba.
 )
 
 echo.
 set "CURRENT_STAGE=Completed"
-"%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status success --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" || goto fail
+set "FINAL_STATUS=success"
+if /I "%BUILD_WARNINGS%"=="YES" set "FINAL_STATUS=warnings"
+"%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status "%FINAL_STATUS%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" || goto fail
 echo.
 echo +======================================================================+
 echo ^|  [OK] Atlas package generated                                       ^|
 echo ^|  [OK] Paxinos annotation installed                                  ^|
-echo ^|  [OK] Registered WHS/Nissl reference installed                      ^|
-echo ^|  [OK] ABBA integration completed                                    ^|
+if /I "%WITH_NISSL%"=="YES" echo ^|  [OK] Registered WHS/Nissl reference installed                      ^|
+if /I "%WITH_NISSL%"=="NO" echo ^|  [--] Registered WHS/Nissl reference disabled                       ^|
+if /I "%PATCH_ABBA%"=="NO" echo ^|  [--] ABBA patches disabled                                          ^|
+if /I "%PATCH_ABBA%"=="YES" if /I "%BUILD_WARNINGS%"=="NO" echo ^|  [OK] ABBA integration completed                                    ^|
+if /I "%BUILD_WARNINGS%"=="YES" echo ^|  [!!] Build completed with warnings                                ^|
 echo +======================================================================+
-echo ^| BUILD SUCCESSFUL                                                     ^|
+if /I "%BUILD_WARNINGS%"=="YES" (echo ^| BUILD SUCCESSFUL WITH WARNINGS                                   ^|) else (echo ^| BUILD SUCCESSFUL                                                     ^|)
 echo +======================================================================+
 echo   Atlas   : paxinos_watson_rat_40um
 if /I "%WITH_NISSL%"=="YES" echo   Result  : Paxinos annotation and registered Nissl channel installed
@@ -297,12 +315,9 @@ if /I "%WITH_NISSL%"=="NO" echo   Result  : Paxinos annotation installed; Nissl 
 echo   Reports : %BUILDER_ROOT%\reports
 echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
 echo.
-echo Restart Fiji/ABBA, open the atlas, and inspect Ch. 0 together with Ch. 3.
-echo.
-pause
+if /I "%NON_INTERACTIVE%"=="NO" pause
 endlocal
 exit /b 0
-
 
 :detect_python
 set "PY_EXE="
@@ -396,5 +411,5 @@ echo   Stage   : %CURRENT_STAGE%
 echo   Reports : %BUILDER_ROOT%\reports
 echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
 echo.
-pause
+if /I "%NON_INTERACTIVE%"=="NO" pause
 exit /b 1

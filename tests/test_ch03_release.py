@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+import shutil
+import sys
 import zipfile
 
 import numpy as np
@@ -11,6 +14,10 @@ import tifffile
 
 from src import ch03_nissl_pipeline as pipeline
 from src import nissl_release_asset
+from src import storage_preflight
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+import v25_clean_native_brainglobe_install as native_install
+from src import summarize_nissl_coverage
 
 
 class RegisteredStackTests(unittest.TestCase):
@@ -136,6 +143,97 @@ class ReleaseAssetTests(unittest.TestCase):
             self.assertEqual(manifest["asset_name"], "new.zip")
             self.assertEqual(manifest["download_url"], url)
             self.assertEqual(manifest["sha256"], nissl_release_asset.sha256_file(asset))
+
+
+class IncrementalBuilderTests(unittest.TestCase):
+    def test_optional_abba_commands_are_direct_and_guarded(self) -> None:
+        batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
+        section = batch[batch.index("echo [25/30]"):batch.index("\n:detect_python")]
+        self.assertNotIn("step_runner.py", section)
+        self.assertIn('if /I "%PATCH_ABBA%"=="YES" (', section)
+        self.assertIn('ABBA_V17_EXIT=!ERRORLEVEL!', section)
+        self.assertIn('ABBA_V44_EXIT=!ERRORLEVEL!', section)
+        self.assertIn('FINAL_STATUS=warnings', section)
+
+    def test_noninteractive_guards_all_pauses(self) -> None:
+        batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
+        pause_lines = [line for line in batch.splitlines() if "pause" in line.lower()]
+        self.assertTrue(pause_lines)
+        self.assertTrue(all("NON_INTERACTIVE" in line for line in pause_lines))
+
+
+class StoragePreflightTests(unittest.TestCase):
+    def test_same_volume_is_deduplicated_with_all_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = storage_preflight.inspect_locations(
+                [("builder_root", root), ("temporary", root / "temp")], warn_gib=0, fail_gib=0
+            )
+            self.assertEqual(len(report["volumes"]), 1)
+            self.assertEqual(report["volumes"][0]["roles"], ["builder_root", "temporary"])
+
+    def test_low_space_warns_but_critical_space_fails(self) -> None:
+        usage = shutil._ntuple_diskusage(total=20 * 1024**3, used=16 * 1024**3, free=4 * 1024**3)
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(storage_preflight.shutil, "disk_usage", return_value=usage):
+            warning = storage_preflight.inspect_locations([("builder_root", Path(temporary))])
+            critical = storage_preflight.inspect_locations([("builder_root", Path(temporary))], fail_gib=5)
+        self.assertEqual(warning["status"], "warning")
+        self.assertEqual(critical["status"], "failed")
+
+
+class NisslDisplayDiagnosticTests(unittest.TestCase):
+    def test_edge_coverage_reports_without_modifying_pixels(self) -> None:
+        labels = np.zeros((2, 3, 4), dtype=np.uint16)
+        labels[:, 1:, 1:3] = 1
+        nissl = np.zeros_like(labels)
+        nissl[:, 1:, 1] = 10
+        before = nissl.copy()
+        report = pipeline.measure_edge_coverage(labels, nissl)
+        self.assertEqual(report["coverage_fraction_median"], 0.5)
+        self.assertFalse(report["pixels_modified"])
+        np.testing.assert_array_equal(nissl, before)
+
+
+class NativeBackupTests(unittest.TestCase):
+    def test_existing_atlas_backup_moves_to_builder_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            brain_globe = root / "brain_globe"
+            atlas = brain_globe / "paxinos_watson_rat_40um_v1.0"
+            atlas.mkdir(parents=True)
+            (atlas / "metadata.json").write_text("{}", encoding="utf-8")
+            legacy = brain_globe / "_paxinos_cleanup_backup_old"
+            legacy.mkdir()
+            (legacy / "old.txt").write_text("old", encoding="utf-8")
+            backup_base = root / "builder" / "backups"
+            report = native_install.backup_existing_paxinos_cache(brain_globe, True, backup_base)
+            self.assertFalse(atlas.exists())
+            self.assertEqual(report["bytes_moved"], 2)
+            destination = Path(report["moved_items"][0]["to"])
+            self.assertTrue((destination / "metadata.json").is_file())
+            self.assertTrue(str(destination).startswith(str(backup_base)))
+            self.assertFalse(legacy.exists())
+            legacy_destination = Path(report["legacy_backup_items"][0]["to"])
+            self.assertTrue((legacy_destination / "old.txt").is_file())
+
+
+class CoverageSummaryTests(unittest.TestCase):
+    def test_compact_summary_ranks_worst_plane_and_reports_insets(self) -> None:
+        report = {"ch03_import": {"edge_coverage": {
+            "plane_count": 2, "coverage_fraction_min": 0.5,
+            "coverage_fraction_median": 0.7, "coverage_fraction_max": 0.9,
+            "pixels_modified": False, "planes": [
+                {"ap": 10, "coverage_fraction": 0.9, "label_pixels": 10,
+                 "label_pixels_with_nissl_signal": 9,
+                 "label_bbox_si_lr": [[0, 0], [9, 9]], "nissl_signal_bbox_si_lr": [[0, 0], [9, 9]]},
+                {"ap": 11, "coverage_fraction": 0.5, "label_pixels": 10,
+                 "label_pixels_with_nissl_signal": 5,
+                 "label_bbox_si_lr": [[0, 0], [9, 9]], "nissl_signal_bbox_si_lr": [[2, 1], [8, 7]]},
+            ]}}}
+        text = summarize_nissl_coverage.summarize(report, worst_count=1)
+        self.assertIn("AP 11", text)
+        self.assertIn("si_min_inset': 2", text)
+        self.assertNotIn("AP 10:", text)
 
 
 if __name__ == "__main__":
