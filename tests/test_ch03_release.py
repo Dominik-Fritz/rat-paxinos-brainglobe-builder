@@ -119,6 +119,40 @@ class WaxholmSourceTests(unittest.TestCase):
                     pipeline.find_waxholm_source(self.manifest())
 
 
+class WindowsTiffActivationTests(unittest.TestCase):
+    def test_validation_handle_is_closed_before_atomic_replace(self) -> None:
+        class FakeTiff:
+            closed = False
+            series = [mock.Mock(shape=pipeline.TARGET_SHAPE, dtype=np.dtype(np.uint16))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.closed = True
+
+        opened = FakeTiff()
+        replaced = []
+
+        def windows_replace(source, destination):
+            if not opened.closed:
+                raise PermissionError(32, "file is used by another process")
+            replaced.append((source, destination))
+            return destination
+
+        temporary = Path("channel.tiff.partial")
+        destination = Path("channel.tiff")
+        with mock.patch.object(pipeline.tifffile, "TiffFile", return_value=opened), \
+                mock.patch.object(Path, "replace", windows_replace):
+            pipeline.activate_validated_tiff(temporary, destination)
+        self.assertTrue(opened.closed)
+        self.assertEqual(replaced, [(temporary, destination)])
+
+    def test_memmap_is_closed_explicitly(self) -> None:
+        mapping = mock.Mock()
+        pipeline.close_memmap(mock.Mock(_mmap=mapping))
+        mapping.close.assert_called_once_with()
+
 class ReleaseAssetTests(unittest.TestCase):
     def test_embedded_registration_package_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

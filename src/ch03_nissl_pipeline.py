@@ -368,6 +368,28 @@ def repack_candidate() -> Path:
     return archive
 
 
+def close_memmap(array: np.ndarray) -> None:
+    """Close a numpy memmap deterministically (required before Windows moves)."""
+    mapping = getattr(array, "_mmap", None)
+    if mapping is not None:
+        mapping.close()
+
+
+def activate_validated_tiff(temporary: Path, destination: Path) -> None:
+    """Validate with a closed TIFF handle, then atomically activate the file."""
+    with tifffile.TiffFile(temporary) as tif:
+        shape = tuple(int(value) for value in tif.series[0].shape)
+        dtype = np.dtype(tif.series[0].dtype)
+    if shape != TARGET_SHAPE or dtype != np.dtype(np.uint16):
+        raise NisslBuildError(
+            "OUTPUT_VALIDATION",
+            f"temporary TIFF must be uint16 {TARGET_SHAPE}, got {dtype} {shape}",
+        )
+    # The context above must be exited before replace(): Windows refuses to
+    # rename an open source file (WinError 32).
+    temporary.replace(destination)
+
+
 def build_from_package(package_path: str) -> int:
     package = Path(package_path).expanduser().resolve()
     manifest = load_package_manifest(package)
@@ -379,14 +401,26 @@ def build_from_package(package_path: str) -> int:
     source = tifffile.memmap(source_path)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     raw = REPORT_DIR / "waxholm_anatomy_reference.raw.partial"
-    reconstruction = render_volume(state, source, raw)
-    volume = np.memmap(raw, mode="r", dtype=np.uint16, shape=TARGET_SHAPE)
     temporary_tiff = ACTIVE_PATH.with_suffix(".tiff.partial")
-    tifffile.imwrite(temporary_tiff, volume, bigtiff=True)
-    if tuple(tifffile.TiffFile(temporary_tiff).series[0].shape) != TARGET_SHAPE:
-        raise NisslBuildError("OUTPUT_VALIDATION", "temporary TIFF shape validation failed")
-    temporary_tiff.replace(ACTIVE_PATH)
     raw.unlink(missing_ok=True)
+    temporary_tiff.unlink(missing_ok=True)
+    volume = None
+    try:
+        reconstruction = render_volume(state, source, raw)
+        close_memmap(source)
+        source = None
+        volume = np.memmap(raw, mode="r", dtype=np.uint16, shape=TARGET_SHAPE)
+        tifffile.imwrite(temporary_tiff, volume, bigtiff=True)
+        close_memmap(volume)
+        volume = None
+        activate_validated_tiff(temporary_tiff, ACTIVE_PATH)
+    finally:
+        if source is not None:
+            close_memmap(source)
+        if volume is not None:
+            close_memmap(volume)
+        temporary_tiff.unlink(missing_ok=True)
+        raw.unlink(missing_ok=True)
     report = {"source": source_report, "reconstruction": reconstruction,
               "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
               "authoritative_registration_source": str(state.path),
