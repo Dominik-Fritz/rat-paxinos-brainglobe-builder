@@ -15,7 +15,7 @@ import tifffile
 from rich.console import Console
 from rich.table import Table
 
-from utils_paths import ATLAS_NAME, REPORTS_DIR, official_candidate_folder
+from utils_paths import ATLAS_NAME, PROJECT_ROOT, REPORTS_DIR, official_candidate_folder
 
 console = Console()
 
@@ -222,21 +222,47 @@ def validate_candidate(folder: Path) -> dict[str, Any]:
     return out
 
 
-def backup_existing_paxinos_cache(bg_dir: Path, clean_install: bool) -> dict[str, Any]:
+def migrate_legacy_backups(bg_dir: Path, backup_base: Path) -> list[dict[str, str]]:
+    """Move old in-cache backups to the builder volume without deleting them."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_root = bg_dir / f"_paxinos_cleanup_backup_{timestamp}"
+    moved: list[dict[str, str]] = []
+    legacy_root = backup_base / "legacy_from_brainglobe"
+    if not bg_dir.exists():
+        return moved
+    for legacy in sorted(bg_dir.glob("_paxinos_cleanup_backup_*"), key=lambda path: path.name):
+        target = legacy_root / legacy.name
+        if target.exists():
+            target = legacy_root / f"{legacy.name}_{timestamp}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(target))
+        moved.append({"from": str(legacy), "to": str(target)})
+    return moved
+
+
+def backup_existing_paxinos_cache(bg_dir: Path, clean_install: bool, backup_base: Path | None = None) -> dict[str, Any]:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Keep backups on the builder volume. Storing each full backup inside the
+    # BrainGlobe directory silently consumed C: on every repeated build.
+    backup_base = backup_base or (PROJECT_ROOT / "backups" / "native_brainglobe")
+    backup_root = backup_base / timestamp
     result = {
         "clean_install_requested": clean_install,
         "bg_dir": str(bg_dir),
         "backup_root": str(backup_root),
         "matched_items": [],
+        "legacy_backup_items": [],
         "moved_items": [],
+        "backup_volume": backup_root.drive or backup_root.anchor,
+        "bytes_moved": 0,
         "skipped": False,
     }
 
     bg_dir.mkdir(parents=True, exist_ok=True)
     matches = sorted([p for p in bg_dir.iterdir() if p.name.startswith(ATLAS_NAME)], key=lambda p: p.name)
     result["matched_items"] = [str(p) for p in matches]
+
+    if clean_install:
+        result["legacy_backup_items"] = migrate_legacy_backups(bg_dir, backup_base)
 
     if not clean_install:
         result["skipped"] = True
@@ -247,8 +273,10 @@ def backup_existing_paxinos_cache(bg_dir: Path, clean_install: bool) -> dict[str
 
     for p in matches:
         target = backup_root / p.name
+        size = sum(item.stat().st_size for item in p.rglob("*") if item.is_file()) if p.is_dir() else p.stat().st_size
         shutil.move(str(p), str(target))
-        result["moved_items"].append({"from": str(p), "to": str(target)})
+        result["bytes_moved"] += int(size)
+        result["moved_items"].append({"from": str(p), "to": str(target), "bytes": int(size)})
 
     return result
 
@@ -492,10 +520,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--native-install", action="store_true")
     parser.add_argument("--clean-install", action="store_true")
+    parser.add_argument("--migrate-legacy-backups", action="store_true")
     args = parser.parse_args()
 
     candidate = official_candidate_folder()
     bg_dir = default_brainglobe_dir()
+    if args.migrate_legacy_backups:
+        moved = migrate_legacy_backups(bg_dir, PROJECT_ROOT / "backups" / "native_brainglobe")
+        print(f"Legacy BrainGlobe backups moved: {len(moved)}")
+        for item in moved:
+            print(f"- {item['from']} -> {item['to']}")
+        return 0
     validation = validate_candidate(candidate)
 
     report: dict[str, Any] = {
@@ -520,7 +555,7 @@ def main() -> int:
         if not validation.get("passed"):
             report["real_load"] = {"attempted": False, "success": False, "exception": "Candidate validation failed."}
         else:
-            report["cleanup"] = backup_existing_paxinos_cache(bg_dir, args.clean_install)
+            report["cleanup"] = backup_existing_paxinos_cache(bg_dir, args.clean_install, PROJECT_ROOT / "backups" / "native_brainglobe")
             report["last_versions_patch"] = patch_last_versions(bg_dir, args.clean_install)
             report["native_install"] = install_versioned_folder(candidate, bg_dir)
             report["post_install_scan"] = post_install_scan(bg_dir)
