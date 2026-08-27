@@ -125,7 +125,7 @@ Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
 authoritative registration input. The builder strictly validates its 588
 sources, action chains and ThinplateSpline transforms, then reconstructs the
 channel plane-by-plane from Waxholm dataset v4.0 as distributed in the pinned
-BrainGlobe `whs_sd_rat_39um` package v1.01
+BrainGlobe `whs_sd_rat_39um` package v1.2
 reference directly on the `(608, 286, 409)` AP/SI/LR grid. The historical
 `registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
 normal build inputs or silent fallbacks; they may only be supplied separately

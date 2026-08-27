@@ -12,7 +12,7 @@
   "target_voxel_size_um": 40.0,
   "waxholm_atlas_name": "whs_sd_rat_39um",
   "waxholm_dataset_version": "4.0",
-  "waxholm_brainglobe_package_version": "1.01",
+  "waxholm_brainglobe_package_version": "1.2",
   "waxholm_reference_shape_ap_si_lr": [1024, 512, 512],
   "waxholm_orientation": "asr",
   "waxholm_ap_direction": "anterior-to-posterior"

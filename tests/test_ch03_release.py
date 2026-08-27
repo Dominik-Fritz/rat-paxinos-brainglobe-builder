@@ -68,13 +68,13 @@ class WaxholmSourceTests(unittest.TestCase):
         return {
             "waxholm_atlas_name": "whs_sd_rat_39um",
             "waxholm_dataset_version": "4.0",
-            "waxholm_brainglobe_package_version": "1.01",
+            "waxholm_brainglobe_package_version": "1.2",
             "waxholm_reference_shape_ap_si_lr": [4, 2, 3],
             "waxholm_orientation": "asr",
         }
 
-    def write_atlas(self, root: Path, version="1.01", orientation="asr") -> Path:
-        atlas = root / "whs_sd_rat_39um_v1.01"
+    def write_atlas(self, root: Path, version="1.2", orientation="asr") -> Path:
+        atlas = root / "whs_sd_rat_39um_v1.2"
         atlas.mkdir(parents=True)
         (atlas / "metadata.json").write_text(
             json.dumps({"version": version, "orientation": orientation}), encoding="utf-8"
