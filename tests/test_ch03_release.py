@@ -18,6 +18,7 @@ from src import storage_preflight
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 import v25_clean_native_brainglobe_install as native_install
 from src import summarize_nissl_coverage
+from src import write_build_summary
 
 
 class RegisteredStackTests(unittest.TestCase):
@@ -324,6 +325,38 @@ class CoverageSummaryTests(unittest.TestCase):
         self.assertIn("AP 11", text)
         self.assertIn("si_min_inset': 2", text)
         self.assertNotIn("AP 10:", text)
+
+
+class BuildSummaryTests(unittest.TestCase):
+    def test_abba_reconstruction_fields_are_not_reported_as_missing(self) -> None:
+        report = {"abba_reconstruction": {
+            "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
+            "reconstruction": {
+                "mapped_plane_count": 588,
+                "anterior_edge_policy": "duplicate_first_registered_plane",
+                "duplicated_anterior_target_ap": 0,
+                "unused_target_sequence_positions": {"before": 1, "after": 0},
+            },
+        }}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "reports/ch03_nissl/ch03_nissl_report.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(report), encoding="utf-8")
+            atlas = root / "atlas"
+            atlas.mkdir()
+            (atlas / "annotation.tiff").write_bytes(b"x")
+            (atlas / "waxholm_anatomy_reference.tiff").write_bytes(b"x")
+            (atlas / "metadata.json").write_text(json.dumps({"additional_references": []}))
+            argv = ["write_build_summary.py", "--root", str(root), "--status", "success"]
+            with mock.patch.object(write_build_summary, "locate_installed_atlas", return_value=atlas), \
+                    mock.patch.object(sys, "argv", argv):
+                self.assertEqual(write_build_summary.main(), 0)
+            summary = (root / "reports/BUILD_SUMMARY.txt").read_text(encoding="utf-8")
+            self.assertIn("Nissl AP order: anterior-to-posterior", summary)
+            self.assertIn("Mapped Nissl planes: 588", summary)
+            self.assertIn("Duplicated anterior target AP: 0", summary)
+            self.assertNotIn("not recorded", summary)
 
 
 if __name__ == "__main__":

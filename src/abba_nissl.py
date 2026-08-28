@@ -246,6 +246,9 @@ def render_volume(state: AbbaState, source: np.ndarray, destination: Path,
         del output
     return {**state.report, "target_grid_ap_si_lr": list(target_shape), "target_voxel_um": 40,
             "target_sequence_offset": 1, "anterior_edge_policy": "duplicate_first_registered_plane",
+            "mapped_plane_count": len(state.registrations), "mapped_target_ap_min_max": [1, 588],
+            "duplicated_anterior_target_ap": 0,
+            "unused_target_sequence_positions": {"before": 1, "after": 0},
             "interpolation": "linear inverse mapping; constant zero outside source",
             "output_raw_sha256": sha256_file(destination)}
 
