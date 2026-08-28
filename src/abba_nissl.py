@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 from scipy.ndimage import map_coordinates
+from scipy.optimize import least_squares
 
 ABBA_SHA256 = "e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06"
 ABBA_MEMBERS = {"sources.json", "state.json", "_bdvdataset_0.xml"}
@@ -245,35 +246,99 @@ def _apply_tps(points: np.ndarray, landmarks: np.ndarray, radial: np.ndarray,
 
 
 def invert_bigwarp_tps(target: np.ndarray, source_points: np.ndarray,
-                       target_points: np.ndarray) -> np.ndarray:
+                       target_points: np.ndarray, allow_invalid: bool = False) -> np.ndarray:
     """Numerically apply BigWarp's iterative inverse; swapping landmarks is not an inverse."""
     radial, affine = _fit_tps(source_points, target_points)
     # A reverse landmark fit is only a fast initial estimate. Newton iterations
     # invert the actual forward TPS stored by BigWarp.
     reverse_radial, reverse_affine = _fit_tps(target_points, source_points)
     estimate = _apply_tps(target, target_points, reverse_radial, reverse_affine)
-    for _ in range(20):
-        mapped, jac = _apply_tps(estimate, source_points, radial, affine, jacobian=True)
-        residual = mapped - target
-        if float(np.max(np.linalg.norm(residual, axis=1))) < 1e-6:
+    initial_estimate = estimate.copy()
+    active = np.ones(len(target), dtype=bool)
+    residual_norm = np.full(len(target), np.inf)
+    for _ in range(50):
+        indexes = np.flatnonzero(active)
+        if not len(indexes):
             return estimate
+        mapped, jac = _apply_tps(estimate[indexes], source_points, radial, affine, jacobian=True)
+        residual = mapped - target[indexes]
+        residual_norm[indexes] = np.linalg.norm(residual, axis=1)
+        converged = residual_norm[indexes] < 1e-6
+        active[indexes[converged]] = False
+        indexes = indexes[~converged]
+        if not len(indexes):
+            return estimate
+        residual = residual[~converged]
+        jac = jac[~converged]
         determinant = jac[:, 0, 0] * jac[:, 1, 1] - jac[:, 0, 1] * jac[:, 1, 0]
-        if np.any(np.abs(determinant) < 1e-12):
-            raise NisslBuildError("ABBA_SPLINE_INVERSE", "singular BigWarp TPS Jacobian")
-        step = np.empty_like(estimate)
+        singular = np.abs(determinant) < 1e-12
+        if np.any(singular):
+            if not allow_invalid:
+                raise NisslBuildError("ABBA_SPLINE_INVERSE", "singular BigWarp TPS Jacobian")
+            estimate[indexes[singular]] = np.nan
+            active[indexes[singular]] = False
+            indexes = indexes[~singular]
+            residual = residual[~singular]
+            jac = jac[~singular]
+            determinant = determinant[~singular]
+            if not len(indexes):
+                continue
+        step = np.empty((len(indexes), 2), dtype=np.float64)
         step[:, 0] = (jac[:, 1, 1] * residual[:, 0] - jac[:, 0, 1] * residual[:, 1]) / determinant
         step[:, 1] = (-jac[:, 1, 0] * residual[:, 0] + jac[:, 0, 0] * residual[:, 1]) / determinant
-        estimate -= step
-    raise NisslBuildError("ABBA_SPLINE_INVERSE", "BigWarp iterative inverse did not converge")
+        # BigWarp's iterative wrapper uses a controlled optimizer. Limit a
+        # Newton jump to 0.5 mm so remote points cannot overshoot/fold while
+        # already-converged pixels remain frozen.
+        length = np.linalg.norm(step, axis=1)
+        scale = np.minimum(1.0, 0.5 / np.maximum(length, 1e-15))
+        estimate[indexes] -= step * scale[:, None]
+    worst = float(np.max(residual_norm[active])) if np.any(active) else 0.0
+    if allow_invalid:
+        # Difficult points are rare and usually occur near strongly warped
+        # boundaries. Recover them individually with a trust-region solver
+        # before declaring that no inverse sample exists.
+        recover = active | np.logical_not(np.isfinite(estimate).all(axis=1))
+        for index in np.flatnonzero(recover):
+            def objective(point):
+                return (_apply_tps(point[None, :], source_points, radial, affine)[0] - target[index])
+
+            start = estimate[index] if np.isfinite(estimate[index]).all() else initial_estimate[index]
+            solved = least_squares(objective, start, method="lm", max_nfev=200,
+                                   ftol=1e-12, xtol=1e-12, gtol=1e-12)
+            if solved.success and np.linalg.norm(objective(solved.x)) < 1e-5:
+                estimate[index] = solved.x
+                active[index] = False
+                recover[index] = False
+        estimate[recover] = np.nan
+        return estimate
+    raise NisslBuildError("ABBA_SPLINE_INVERSE",
+                          f"BigWarp iterative inverse did not converge for {int(active.sum())}/{len(target)} "
+                          f"pixels; maximum residual {worst:.6g} mm")
 
 
-def render_plane(source: np.ndarray, registration: Registration, shape: tuple[int, int]) -> np.ndarray:
+def render_plane(source: np.ndarray, registration: Registration, shape: tuple[int, int],
+                 diagnostics: dict | None = None) -> np.ndarray:
     """Inverse-map one slice onto the centred 40-um SI/LR target grid."""
     si, lr = np.indices(shape, dtype=np.float64)
     # BDV centres an n-pixel source using origin -n*spacing/2 (not -(n-1)/2).
     target_xy = np.column_stack((lr.ravel() * .04 - shape[1] * .04 / 2,
                                  si.ravel() * .04 - shape[0] * .04 / 2))
-    inverse = invert_bigwarp_tps(target_xy, registration.source_points, registration.target_points)
+    inverse = np.empty_like(target_xy)
+    # Chunking bounds TPS working memory and isolates iterative convergence;
+    # some curated planes contain 60+ landmarks.
+    for start in range(0, len(target_xy), 4096):
+        stop = min(start + 4096, len(target_xy))
+        try:
+            inverse[start:stop] = invert_bigwarp_tps(
+                target_xy[start:stop], registration.source_points, registration.target_points,
+                allow_invalid=True,
+            )
+        except NisslBuildError as exc:
+            raise NisslBuildError(
+                exc.code,
+                f"source_id {registration.source_id} (Waxholm AP {registration.ap_index}), "
+                f"target pixels {start}..{stop - 1}: {exc}",
+            ) from exc
     affine = np.asarray(registration.pretransform).reshape(3, 4)
     homogeneous = np.eye(4); homogeneous[:3] = affine
     try:
@@ -287,6 +352,11 @@ def render_plane(source: np.ndarray, registration: Registration, shape: tuple[in
     source_pixel = source_world @ np.linalg.inv(bdv).T
     source_lr = source_pixel[:, 0]
     source_si = source_pixel[:, 1]
+    invalid = np.logical_not(np.isfinite(source_lr) & np.isfinite(source_si))
+    source_lr[invalid] = -1e9
+    source_si[invalid] = -1e9
+    if diagnostics is not None:
+        diagnostics["noninvertible_target_pixels"] = int(invalid.sum())
     return map_coordinates(source, [source_si, source_lr], order=1, mode="constant", cval=0,
                            prefilter=False).reshape(shape)
 
@@ -311,10 +381,15 @@ def render_volume(state: AbbaState, source: np.ndarray, destination: Path,
     output = allocate_memmap(destination, target_shape)
     output[:] = 0
     try:
+        inverse_diagnostics = []
         for registration in state.registrations:
             target_ap = registration.source_id + 1
+            plane_diagnostics = {"source_id": registration.source_id,
+                                 "waxholm_ap": registration.ap_index, "target_ap": target_ap}
             output[target_ap] = np.clip(render_plane(source[registration.ap_index], registration,
-                                                      target_shape[1:]), 0, 65535).astype(np.uint16)
+                                                      target_shape[1:], plane_diagnostics), 0, 65535).astype(np.uint16)
+            if plane_diagnostics["noninvertible_target_pixels"]:
+                inverse_diagnostics.append(plane_diagnostics)
         output[0] = output[1]  # scientifically confirmed anterior edge policy
         output.flush()
     except MemoryError as exc:
@@ -330,6 +405,10 @@ def render_volume(state: AbbaState, source: np.ndarray, destination: Path,
             "mapped_plane_count": len(state.registrations), "mapped_target_ap_min_max": [1, 588],
             "duplicated_anterior_target_ap": 0,
             "unused_target_sequence_positions": {"before": 1, "after": 0},
+            "noninvertible_target_pixels_zero_filled": int(sum(
+                plane["noninvertible_target_pixels"] for plane in inverse_diagnostics
+            )),
+            "noninvertible_planes": inverse_diagnostics,
             "interpolation": "linear inverse mapping; constant zero outside source",
             "output_raw_sha256": sha256_file(destination)}
 

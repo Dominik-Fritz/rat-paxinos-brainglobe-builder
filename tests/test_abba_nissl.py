@@ -97,6 +97,18 @@ class RenderTests(unittest.TestCase):
         recovered = abba_nissl.invert_bigwarp_tps(warped, source, target)
         np.testing.assert_allclose(recovered, samples, atol=1e-6)
 
+    def test_noninvertible_boundary_pixels_are_zero_and_reported(self):
+        source = np.full((5, 5), 100, dtype=np.uint16)
+        diagnostics = {}
+        def inverse_with_one_undefined(target, *args, **kwargs):
+            result = target.copy()
+            result[0] = np.nan
+            return result
+        with mock.patch.object(abba_nissl, "invert_bigwarp_tps", side_effect=inverse_with_one_undefined):
+            output = abba_nissl.render_plane(source, self.registration(), (3, 3), diagnostics)
+        self.assertEqual(output.flat[0], 0)
+        self.assertEqual(diagnostics["noninvertible_target_pixels"], 1)
+
     def test_memory_and_enospc_are_classified(self):
         with mock.patch("numpy.memmap", side_effect=MemoryError):
             with self.assertRaisesRegex(abba_nissl.NisslBuildError, "MEMORY_EXHAUSTED"):

@@ -136,6 +136,11 @@ and numerically inverts the actual forward BigWarp thin-plate spline. Merely
 fitting a second spline with exchanged source/target landmarks is not treated
 as the inverse, because that changes nonlinear registrations. Target and source
 pixel origins follow BDV's `-size * spacing / 2` convention.
+The inverse is evaluated in bounded chunks with per-pixel convergence. Rare
+boundary pixels for which the curated forward TPS has no numerically valid
+inverse are sampled with the documented constant-zero boundary policy and
+listed per source/AP plane in the reconstruction report; converged pixels are
+never discarded merely because a different pixel in the same plane fails.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
