@@ -131,6 +131,12 @@ reference directly on the `(608, 286, 409)` AP/SI/LR grid. The historical
 normal build inputs or silent fallbacks; they may only be supplied separately
 for numerical/visual v0.3.0 comparison.
 
+The renderer applies the embedded BDV pixel-to-world affine for every source
+and numerically inverts the actual forward BigWarp thin-plate spline. Merely
+fitting a second spline with exchanged source/target landmarks is not treated
+as the inverse, because that changes nonlinear registrations. Target and source
+pixel origins follow BDV's `-size * spacing / 2` convention.
+
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
 build rather than producing an unverified channel.

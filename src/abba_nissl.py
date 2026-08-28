@@ -13,9 +13,9 @@ from pathlib import Path
 import re
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 
 import numpy as np
-from scipy.interpolate import RBFInterpolator
 from scipy.ndimage import map_coordinates
 
 ABBA_SHA256 = "e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06"
@@ -68,6 +68,9 @@ class Registration:
     source_points: np.ndarray
     target_points: np.ndarray
     transform_sha256: str
+    source_affine: tuple[float, ...] = (
+        .039, 0., 0., -9.984, 0., .039, 0., -9.984, 0., 0., .001, -.0005,
+    )
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,19 @@ def validate_abba(path: Path, expected_hash: str = ABBA_SHA256) -> AbbaState:
             raise NisslBuildError("ABBA_DATASET", f"source_id {sid} does not reference the embedded BDV dataset")
     if "project.qpproj" not in bdv:
         raise NisslBuildError("ABBA_DATASET", "unexpected BDV provenance; historical path is recorded but never opened")
+    try:
+        bdv_root = ET.fromstring(bdv)
+        setup_affines = {}
+        for view in bdv_root.findall(".//ViewRegistration"):
+            transforms = view.findall("./ViewTransform/affine")
+            if len(transforms) != 1 or not transforms[0].text:
+                raise ValueError(f"view setup {view.get('setup')} has no unique affine")
+            values = tuple(float(value) for value in transforms[0].text.split())
+            if len(values) != 12 or not np.isfinite(values).all():
+                raise ValueError(f"view setup {view.get('setup')} has an invalid affine")
+            setup_affines[int(view.get("setup", "-1"))] = values
+    except (ET.ParseError, TypeError, ValueError) as exc:
+        raise NisslBuildError("ABBA_DATASET", f"invalid embedded BDV registrations: {exc}") from exc
 
     registrations: list[Registration] = []
     action_counts: dict[str, int] = {}
@@ -166,12 +182,19 @@ def validate_abba(path: Path, expected_hash: str = ABBA_SHA256) -> AbbaState:
         canonical = json.dumps(tps, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode()).hexdigest()
         transform_hashes.append(digest)
-        registrations.append(Registration(created, created + 189, tuple(map(float, pre)), src, tgt, digest))
+        setup = by_id[created].get("sac", {}).get("viewsetup")
+        if not isinstance(setup, int) or setup not in setup_affines:
+            raise NisslBuildError("ABBA_DATASET", f"source_id {created} has no BDV pixel-to-world affine")
+        registrations.append(Registration(
+            created, created + 189, tuple(map(float, pre)), src, tgt, digest, setup_affines[setup]
+        ))
     copied = sum(count - 1 for count in __import__("collections").Counter(transform_hashes).values() if count > 1)
     report = {"abba_sha256": expected_hash, "abba_version": state.get("version"), "source_count": 588,
               "slice_state_count": 588, "source_ap_range": [189, 776], "source_direction": "anterior-to-posterior",
               "action_counts": action_counts, "registration_types": ["SacBigWarp2DRegistration/ThinplateSplineTransform"],
-              "copied_registration_planes": copied, "historical_bdv_path_used": False}
+              "copied_registration_planes": copied, "historical_bdv_path_used": False,
+              "bdv_pixel_to_world_affines_applied": True,
+              "bigwarp_inverse": "Newton inverse of forward TPS; landmarks are never swapped as the final transform"}
     return AbbaState(path, str(state.get("version")), tuple(registrations), report)
 
 
@@ -188,14 +211,69 @@ def validate_source_volume(path: Path, expected_sha256: str, expected_shape: tup
     return volume
 
 
+def _fit_tps(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Fit the same 2-D r^2 log(r) TPS represented by BigWarp landmarks."""
+    delta = source[:, None, :] - source[None, :, :]
+    radius = np.linalg.norm(delta, axis=2)
+    kernel = np.zeros_like(radius)
+    nonzero = radius > 0
+    kernel[nonzero] = radius[nonzero] ** 2 * np.log(radius[nonzero])
+    polynomial = np.column_stack((np.ones(len(source)), source))
+    system = np.block([[kernel, polynomial], [polynomial.T, np.zeros((3, 3))]])
+    rhs = np.vstack((target, np.zeros((3, 2))))
+    coefficients = np.linalg.lstsq(system, rhs, rcond=None)[0]
+    return coefficients[:len(source)], coefficients[len(source):]
+
+
+def _apply_tps(points: np.ndarray, landmarks: np.ndarray, radial: np.ndarray,
+               affine: np.ndarray, jacobian: bool = False):
+    delta = points[:, None, :] - landmarks[None, :, :]
+    radius = np.linalg.norm(delta, axis=2)
+    kernel = np.zeros_like(radius)
+    nonzero = radius > 0
+    kernel[nonzero] = radius[nonzero] ** 2 * np.log(radius[nonzero])
+    result = kernel @ radial + np.column_stack((np.ones(len(points)), points)) @ affine
+    if not jacobian:
+        return result
+    factor = np.zeros_like(radius)
+    factor[nonzero] = 2 * np.log(radius[nonzero]) + 1
+    derivative = delta * factor[:, :, None]
+    # J[n, output_coordinate, input_coordinate]
+    matrix = np.einsum("nki,ko->noi", derivative, radial)
+    matrix += affine[1:].T[None, :, :]
+    return result, matrix
+
+
+def invert_bigwarp_tps(target: np.ndarray, source_points: np.ndarray,
+                       target_points: np.ndarray) -> np.ndarray:
+    """Numerically apply BigWarp's iterative inverse; swapping landmarks is not an inverse."""
+    radial, affine = _fit_tps(source_points, target_points)
+    # A reverse landmark fit is only a fast initial estimate. Newton iterations
+    # invert the actual forward TPS stored by BigWarp.
+    reverse_radial, reverse_affine = _fit_tps(target_points, source_points)
+    estimate = _apply_tps(target, target_points, reverse_radial, reverse_affine)
+    for _ in range(20):
+        mapped, jac = _apply_tps(estimate, source_points, radial, affine, jacobian=True)
+        residual = mapped - target
+        if float(np.max(np.linalg.norm(residual, axis=1))) < 1e-6:
+            return estimate
+        determinant = jac[:, 0, 0] * jac[:, 1, 1] - jac[:, 0, 1] * jac[:, 1, 0]
+        if np.any(np.abs(determinant) < 1e-12):
+            raise NisslBuildError("ABBA_SPLINE_INVERSE", "singular BigWarp TPS Jacobian")
+        step = np.empty_like(estimate)
+        step[:, 0] = (jac[:, 1, 1] * residual[:, 0] - jac[:, 0, 1] * residual[:, 1]) / determinant
+        step[:, 1] = (-jac[:, 1, 0] * residual[:, 0] + jac[:, 0, 0] * residual[:, 1]) / determinant
+        estimate -= step
+    raise NisslBuildError("ABBA_SPLINE_INVERSE", "BigWarp iterative inverse did not converge")
+
+
 def render_plane(source: np.ndarray, registration: Registration, shape: tuple[int, int]) -> np.ndarray:
     """Inverse-map one slice onto the centred 40-um SI/LR target grid."""
     si, lr = np.indices(shape, dtype=np.float64)
-    target_xy = np.column_stack(((lr.ravel() - (shape[1]-1)/2) * .04,
-                                 (si.ravel() - (shape[0]-1)/2) * .04))
-    # ABBA stores the forward TPS landmarks. Rendering requires target->source.
-    inverse = RBFInterpolator(registration.target_points, registration.source_points,
-                              kernel="thin_plate_spline", degree=1)(target_xy)
+    # BDV centres an n-pixel source using origin -n*spacing/2 (not -(n-1)/2).
+    target_xy = np.column_stack((lr.ravel() * .04 - shape[1] * .04 / 2,
+                                 si.ravel() * .04 - shape[0] * .04 / 2))
+    inverse = invert_bigwarp_tps(target_xy, registration.source_points, registration.target_points)
     affine = np.asarray(registration.pretransform).reshape(3, 4)
     homogeneous = np.eye(4); homogeneous[:3] = affine
     try:
@@ -204,8 +282,11 @@ def render_plane(source: np.ndarray, registration: Registration, shape: tuple[in
         raise NisslBuildError("ABBA_PRETRANSFORM", f"singular preTransform for source {registration.source_id}") from exc
     xyz = np.column_stack((inverse, np.zeros(len(inverse)), np.ones(len(inverse))))
     inverse = (xyz @ undo_affine.T)[:, :2]
-    source_lr = inverse[:, 0] / .039 + (source.shape[1]-1)/2
-    source_si = inverse[:, 1] / .039 + (source.shape[0]-1)/2
+    source_world = np.column_stack((inverse, np.zeros(len(inverse)), np.ones(len(inverse))))
+    bdv = np.eye(4); bdv[:3] = np.asarray(registration.source_affine).reshape(3, 4)
+    source_pixel = source_world @ np.linalg.inv(bdv).T
+    source_lr = source_pixel[:, 0]
+    source_si = source_pixel[:, 1]
     return map_coordinates(source, [source_si, source_lr], order=1, mode="constant", cval=0,
                            prefilter=False).reshape(shape)
 

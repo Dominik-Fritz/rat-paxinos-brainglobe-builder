@@ -34,6 +34,8 @@ class AbbaValidationTests(unittest.TestCase):
         state = abba_nissl.validate_abba(REAL)
         self.assertEqual(len(state.registrations), 588)
         self.assertGreater(state.report["copied_registration_planes"], 0)
+        self.assertEqual(state.registrations[0].source_affine[:4], (.039, 0., 0., -9.984))
+        self.assertTrue(state.report["bdv_pixel_to_world_affines_applied"])
 
     def test_wrong_hash(self):
         with self.assertRaisesRegex(abba_nissl.NisslBuildError, "ABBA_HASH_MISMATCH"):
@@ -74,13 +76,26 @@ class AbbaValidationTests(unittest.TestCase):
 class RenderTests(unittest.TestCase):
     def registration(self, affine=None):
         points = np.array([[-1., -1.], [1., -1.], [-1., 1.], [1., 1.]])
-        return abba_nissl.Registration(0, 189, tuple(affine or [1,0,0,0, 0,1,0,0, 0,0,1,0]), points, points, "x")
+        source_affine = (.04, 0, 0, -.1, 0, .04, 0, -.1, 0, 0, .001, -.0005)
+        return abba_nissl.Registration(
+            0, 189, tuple(affine or [1,0,0,0, 0,1,0,0, 0,0,1,0]),
+            points, points, "x", source_affine,
+        )
 
     def test_identity_spline_and_affine(self):
         source = np.arange(25, dtype=np.uint16).reshape(5, 5)
         output = abba_nissl.render_plane(source, self.registration(), (3, 3))
         self.assertEqual(output.shape, (3, 3))
         self.assertEqual(output[1, 1], source[2, 2])
+
+    def test_iterative_inverse_recovers_nonlinear_forward_tps(self):
+        source = np.array([[-1., -1.], [1., -1.], [-1., 1.], [1., 1.], [0., 0.]])
+        target = source.copy(); target[-1] = [.25, -.2]
+        radial, affine = abba_nissl._fit_tps(source, target)
+        samples = np.array([[-.4, .2], [.3, -.5], [.1, .4]])
+        warped = abba_nissl._apply_tps(samples, source, radial, affine)
+        recovered = abba_nissl.invert_bigwarp_tps(warped, source, target)
+        np.testing.assert_allclose(recovered, samples, atol=1e-6)
 
     def test_memory_and_enospc_are_classified(self):
         with mock.patch("numpy.memmap", side_effect=MemoryError):
