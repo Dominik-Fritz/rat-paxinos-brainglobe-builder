@@ -1,13 +1,19 @@
 {
   "schema_version": 1,
   "release": "0.3.0-prerelease",
-  "stack_file": "registered_slices_ImageJ_stack.tif",
-  "state_file": "final_for_V_0_3.abba",
+  "abba_state_file": "final_for_V_0_3.abba",
+  "abba_state_sha256": "e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06",
   "stack_order": "anterior-to-posterior",
   "target_sequence_offset": 1,
   "anterior_edge_policy": "duplicate_first_registered_plane",
-  "expected_stack_shape": [588, 656, 940],
+  "legacy_stack": "comparison-only",
   "source_index_range": [189, 776],
-  "source_pixel_size_um": 19.5,
-  "target_voxel_size_um": 40.0
+  "source_pixel_size_um": 39.0,
+  "target_voxel_size_um": 40.0,
+  "waxholm_atlas_name": "whs_sd_rat_39um",
+  "waxholm_dataset_version": "4.0",
+  "waxholm_brainglobe_package_version": "1.2",
+  "waxholm_reference_shape_ap_si_lr": [1024, 512, 512],
+  "waxholm_orientation": "asr",
+  "waxholm_ap_direction": "anterior-to-posterior"
 }

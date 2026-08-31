@@ -40,12 +40,32 @@ def main() -> int:
         refs = [refs]
     nissl_installed = bool(atlas and (atlas / "waxholm_anatomy_reference.tiff").is_file())
     nissl_requested = args.nissl.upper() == "YES"
+    registration_metadata = metadata.get("optional_ch03_registration", {})
+    renderer_backend = registration_metadata.get("renderer_backend", "unverified_or_legacy")
+    native_parity_verified = registration_metadata.get("native_parity_verified") is True
     ch03_report_path = reports / "ch03_nissl" / "ch03_nissl_report.json"
     ch03_report = (
         json.loads(ch03_report_path.read_text(encoding="utf-8"))
         if nissl_requested and ch03_report_path.is_file() else {}
     )
     import_report = ch03_report.get("ch03_import", {})
+    reconstruction_report = ch03_report.get("abba_reconstruction", {})
+    if reconstruction_report:
+        reconstruction = reconstruction_report.get("reconstruction", {})
+        # Normalize the new ABBA reconstruction report to the established
+        # summary fields while retaining compatibility with v0.3.0 reports.
+        import_report = {
+            "stack_order": reconstruction_report.get(
+                "stack_order", reconstruction.get("source_direction")
+            ),
+            "mapped_plane_count": reconstruction.get("mapped_plane_count"),
+            "target_sequence_offset": reconstruction_report.get(
+                "target_sequence_offset", reconstruction.get("target_sequence_offset")
+            ),
+            "anterior_edge_policy": reconstruction.get("anterior_edge_policy"),
+            "duplicated_anterior_target_ap": reconstruction.get("duplicated_anterior_target_ap"),
+            "unused_target_sequence_positions": reconstruction.get("unused_target_sequence_positions"),
+        }
     lines = [
         "Rat Paxinos/Watson Atlas Builder - Build Summary",
         "=" * 72,
@@ -59,6 +79,8 @@ def main() -> int:
         f"Atlas: {atlas if atlas else 'not located'}",
         f"Paxinos annotation: {'present' if atlas and (atlas / 'annotation.tiff').is_file() else 'not confirmed'}",
         f"Registered Nissl channel: {'present' if nissl_requested and nissl_installed else 'disabled for this build' if not nissl_requested else 'not present'}",
+        f"Nissl renderer backend: {renderer_backend}",
+        f"Native ABBA parity verified: {native_parity_verified}",
         f"Nissl AP order: {import_report.get('stack_order', 'not recorded')}",
         f"Mapped Nissl planes: {import_report.get('mapped_plane_count', 'not recorded')}",
         f"Target sequence offset: {import_report.get('target_sequence_offset', 'not recorded')}",
@@ -72,6 +94,11 @@ def main() -> int:
         "-" * 72,
         "The Paxinos annotation remains authoritative for region assignment.",
         "The registered Waxholm Nissl channel is a non-authoritative visual aid.",
+        ("Native ABBA 0.11 parity is verified." if native_parity_verified else
+         "WARNING: the installed Nissl channel has no verified native ABBA 0.11 provenance."),
+        ("The Nissl channel was reconstructed from the immutable, versioned ABBA state and the "
+         "pinned Waxholm source; no pre-rendered v0.3.0 stack was used." if nissl_installed else
+         "No reconstructed Nissl channel was installed."),
         "",
         f"Detailed reports: {reports}",
     ]

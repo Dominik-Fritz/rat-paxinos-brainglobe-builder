@@ -18,9 +18,32 @@ from src import storage_preflight
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 import v25_clean_native_brainglobe_install as native_install
 from src import summarize_nissl_coverage
+from src import write_build_summary
 
 
 class RegisteredStackTests(unittest.TestCase):
+    def test_unverified_renderer_cannot_be_installed(self) -> None:
+        with self.assertRaisesRegex(pipeline.NisslBuildError, "NISSL_INSTALL_UNVERIFIED"):
+            pipeline.install_channel({
+                "renderer_backend": "experimental_python_tps",
+                "native_parity_verified": False,
+            })
+
+    def test_release_build_rejects_unverified_python_bigwarp_renderer(self) -> None:
+        with self.assertRaisesRegex(pipeline.NisslBuildError, "ABBA_NATIVE_PARITY_REQUIRED"):
+            pipeline.require_scientific_render_readiness(False)
+
+    def test_experimental_renderer_requires_explicit_opt_in(self) -> None:
+        pipeline.require_scientific_render_readiness(True)
+
+    def test_target_offset_is_applied_to_nonempty_label_sequence_not_volume_zero(self) -> None:
+        labels = np.zeros((608, 1, 1), dtype=np.uint16)
+        labels[10:599] = 1
+        target_ap, duplicate = pipeline.registered_target_ap_mapping(labels)
+        self.assertEqual(duplicate, 10)
+        self.assertEqual((int(target_ap[0]), int(target_ap[-1])), (11, 598))
+        self.assertEqual(len(target_ap), 588)
+
     def test_anterior_to_posterior_preserves_stack_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -63,6 +86,96 @@ class RegisteredStackTests(unittest.TestCase):
                     setattr(pipeline, name, value)
 
 
+class WaxholmSourceTests(unittest.TestCase):
+    def manifest(self):
+        return {
+            "waxholm_atlas_name": "whs_sd_rat_39um",
+            "waxholm_dataset_version": "4.0",
+            "waxholm_brainglobe_package_version": "1.2",
+            "waxholm_reference_shape_ap_si_lr": [4, 2, 3],
+            "waxholm_orientation": "asr",
+        }
+
+    def write_atlas(self, root: Path, version="1.2", orientation="asr") -> Path:
+        atlas = root / "whs_sd_rat_39um_v1.2"
+        atlas.mkdir(parents=True)
+        (atlas / "metadata.json").write_text(
+            json.dumps({"version": version, "orientation": orientation}), encoding="utf-8"
+        )
+        tifffile.imwrite(atlas / "reference.tiff", np.zeros((4, 2, 3), dtype=np.uint16))
+        return atlas
+
+    def test_missing_cache_is_downloaded_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlas = self.write_atlas(root)
+            fake = mock.Mock(brainglobe_dir=root, local_full_name=atlas.name)
+            # Simulate that the downloader creates the atlas during construction.
+            shutil.rmtree(atlas)
+            def download(*args, **kwargs):
+                created = self.write_atlas(root)
+                fake.local_full_name = created.name
+                return fake
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root), \
+                    mock.patch.object(pipeline, "BrainGlobeAtlas", side_effect=download) as constructor:
+                source, report = pipeline.find_waxholm_source(self.manifest())
+            constructor.assert_called_once_with("whs_sd_rat_39um", brainglobe_dir=root, check_latest=True)
+            self.assertTrue(source.is_file())
+            self.assertEqual(report["source_kind"], "downloaded and validated by BrainGlobe AtlasAPI")
+
+    def test_wrong_downloaded_package_version_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            other = root / "whs_sd_rat_39um_v2.0"
+            fake = mock.Mock(brainglobe_dir=root, local_full_name=other.name)
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root), \
+                    mock.patch.object(pipeline, "BrainGlobeAtlas", return_value=fake):
+                with self.assertRaisesRegex(pipeline.NisslBuildError, "WHS_VERSION"):
+                    pipeline.find_waxholm_source(self.manifest())
+
+    def test_wrong_orientation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_atlas(root, orientation="pir")
+            with mock.patch.object(pipeline.brainglobe_config, "get_brainglobe_dir", return_value=root):
+                with self.assertRaisesRegex(pipeline.NisslBuildError, "WHS_ORIENTATION"):
+                    pipeline.find_waxholm_source(self.manifest())
+
+
+class WindowsTiffActivationTests(unittest.TestCase):
+    def test_validation_handle_is_closed_before_atomic_replace(self) -> None:
+        class FakeTiff:
+            closed = False
+            series = [mock.Mock(shape=pipeline.TARGET_SHAPE, dtype=np.dtype(np.uint16))]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.closed = True
+
+        opened = FakeTiff()
+        replaced = []
+
+        def windows_replace(source, destination):
+            if not opened.closed:
+                raise PermissionError(32, "file is used by another process")
+            replaced.append((source, destination))
+            return destination
+
+        temporary = Path("channel.tiff.partial")
+        destination = Path("channel.tiff")
+        with mock.patch.object(pipeline.tifffile, "TiffFile", return_value=opened), \
+                mock.patch.object(Path, "replace", windows_replace):
+            pipeline.activate_validated_tiff(temporary, destination)
+        self.assertTrue(opened.closed)
+        self.assertEqual(replaced, [(temporary, destination)])
+
+    def test_memmap_is_closed_explicitly(self) -> None:
+        mapping = mock.Mock()
+        pipeline.close_memmap(mock.Mock(_mmap=mapping))
+        mapping.close.assert_called_once_with()
+
 class ReleaseAssetTests(unittest.TestCase):
     def test_embedded_registration_package_resolves(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -76,7 +189,7 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "test.zip",
                         "download_url": "",
                         "sha256": "",
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",
@@ -84,8 +197,8 @@ class ReleaseAssetTests(unittest.TestCase):
             package = root / "resources" / "optional_ch03" / "nissl_registration_0_3_0"
             package.mkdir()
             (package / "final.abba").write_text("{}", encoding="utf-8")
+            manifest = json.loads(manifest_path.read_text()); manifest["expected_abba_sha256"] = nissl_release_asset.sha256_file(package / "final.abba"); manifest_path.write_text(json.dumps(manifest))
             (package / "registration_manifest.json").write_text("{}", encoding="utf-8")
-            (package / "registered_slices_ImageJ_stack.tif").write_bytes(b"test")
             self.assertEqual(nissl_release_asset.resolve(root), package.resolve())
             self.assertTrue((root / "reports/nissl_release_asset/nissl_release_asset_summary.txt").is_file())
 
@@ -98,7 +211,7 @@ class ReleaseAssetTests(unittest.TestCase):
             with zipfile.ZipFile(source_zip, "w") as archive:
                 archive.writestr("final.abba", "{}")
                 archive.writestr("registration_manifest.json", "{}")
-                archive.writestr("registered_slices_ImageJ_stack.tif", "test")
+                archive.writestr("unused-legacy-stack.tif", "test")
             digest = nissl_release_asset.sha256_file(source_zip)
             manifest_path = root / nissl_release_asset.MANIFEST_RELATIVE
             manifest_path.parent.mkdir(parents=True)
@@ -109,14 +222,14 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "test.zip",
                         "download_url": source_zip.as_uri(),
                         "sha256": digest,
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",
             )
             package = nissl_release_asset.resolve(root)
             self.assertTrue((package / "final.abba").is_file())
-            self.assertTrue((package / "registered_slices_ImageJ_stack.tif").is_file())
+            self.assertFalse((package / "registered_slices_ImageJ_stack.tif").is_file())
 
     def test_pin_asset_records_url_and_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -130,7 +243,7 @@ class ReleaseAssetTests(unittest.TestCase):
                         "asset_name": "old.zip",
                         "download_url": "",
                         "sha256": "",
-                        "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+                        "expected_abba_state": "final.abba", "expected_abba_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                     }
                 ),
                 encoding="utf-8",
@@ -234,6 +347,40 @@ class CoverageSummaryTests(unittest.TestCase):
         self.assertIn("AP 11", text)
         self.assertIn("si_min_inset': 2", text)
         self.assertNotIn("AP 10:", text)
+
+
+class BuildSummaryTests(unittest.TestCase):
+    def test_abba_reconstruction_fields_are_not_reported_as_missing(self) -> None:
+        report = {"abba_reconstruction": {
+            "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
+            "reconstruction": {
+                "mapped_plane_count": 588,
+                "anterior_edge_policy": "duplicate_first_registered_plane",
+                "duplicated_anterior_target_ap": 0,
+                "unused_target_sequence_positions": {"before": 1, "after": 0},
+            },
+        }}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "reports/ch03_nissl/ch03_nissl_report.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(report), encoding="utf-8")
+            atlas = root / "atlas"
+            atlas.mkdir()
+            (atlas / "annotation.tiff").write_bytes(b"x")
+            (atlas / "waxholm_anatomy_reference.tiff").write_bytes(b"x")
+            (atlas / "metadata.json").write_text(json.dumps({"additional_references": []}))
+            argv = ["write_build_summary.py", "--root", str(root), "--status", "success"]
+            with mock.patch.object(write_build_summary, "locate_installed_atlas", return_value=atlas), \
+                    mock.patch.object(sys, "argv", argv):
+                self.assertEqual(write_build_summary.main(), 0)
+            summary = (root / "reports/BUILD_SUMMARY.txt").read_text(encoding="utf-8")
+            self.assertIn("Nissl AP order: anterior-to-posterior", summary)
+            self.assertIn("Mapped Nissl planes: 588", summary)
+            self.assertIn("Duplicated anterior target AP: 0", summary)
+            self.assertIn("Nissl renderer backend: unverified_or_legacy", summary)
+            self.assertIn("Native ABBA parity verified: False", summary)
+            self.assertNotIn("not recorded", summary)
 
 
 if __name__ == "__main__":

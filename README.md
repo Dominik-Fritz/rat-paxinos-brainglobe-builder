@@ -120,11 +120,51 @@ positions 1 through 588. Because no separately registered anterior edge image
 exists, position zero displays a documented duplicate of the nearest registered
 section. No interpolation or new registration is performed.
 
-The ImageJ export has the shape `(588, 656, 940)` at an in-plane calibration of
-19.5 µm. The atlas TIFF grid is `(608, 286, 409)` in AP/SI/LR order at 40 µm.
-The importer samples the centered physical ImageJ canvas onto the Paxinos grid.
-This is a calibrated grid conversion, not a new anatomical registration; the
-manually defined BigWarp transformations remain unchanged.
+Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
+`e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`) is the
+authoritative registration input. The builder strictly validates its 588
+sources, action chains and ThinplateSpline transforms, then reconstructs the
+channel plane-by-plane from Waxholm dataset v4.0 as distributed in the pinned
+BrainGlobe `whs_sd_rat_39um` package v1.2
+reference directly on the `(608, 286, 409)` AP/SI/LR grid. The historical
+`registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
+normal build inputs or silent fallbacks; they may only be supplied separately
+for numerical/visual v0.3.0 comparison.
+
+The renderer applies the embedded BDV pixel-to-world affine for every source
+and numerically inverts the actual forward BigWarp thin-plate spline. Merely
+fitting a second spline with exchanged source/target landmarks is not treated
+as the inverse, because that changes nonlinear registrations. Target and source
+pixel origins follow BDV's `-size * spacing / 2` convention.
+The inverse is evaluated in bounded chunks with per-pixel convergence. Rare
+boundary pixels for which the curated forward TPS has no numerically valid
+inverse are sampled with the documented constant-zero boundary policy and
+listed per source/AP plane in the reconstruction report; converged pixels are
+never discarded merely because a different pixel in the same plane fails.
+
+The confirmed `+1` target offset is an offset within the 589 non-empty Paxinos
+label planes, not an absolute volume index. The 588 registrations are therefore
+written to `nonempty_ap[1:589]`, and `nonempty_ap[0]` receives the documented
+anterior duplicate. Empty leading/trailing AP planes in the 608-plane container
+must not shift the registered anatomy.
+
+## Native ABBA parity gate
+
+An ABBA state is not a self-contained rendered registration project: this
+archive contains the moving-source BDV affine and BigWarp landmarks, but the
+fixed Paxinos `SourceAndConverter` transform was supplied externally when the
+session was opened, and the archive contains no hashes of the original Nissl
+pixels. Consequently, the normal release build now stops with
+`ABBA_NATIVE_PARITY_REQUIRED` rather than silently treating the independent
+Python TPS implementation as scientifically identical. A development-only
+`--experimental-python-render` switch remains for diagnostics; `run_builder.bat`
+does not enable it. Release rendering must use ABBA 0.11/BigWarp's native Java
+transform stack and pass the separate v0.3.0 numerical and visual comparison.
+Defense in depth also prevents `install_channel` from accepting any output
+unless its provenance states `renderer_backend=native_abba_0.11` and
+`native_parity_verified=true`. The experimental renderer writes diagnostics
+only; it cannot install or package Ch03. BUILD_SUMMARY exposes both fields so a
+pre-gate or stale installed channel cannot be mistaken for native output.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
@@ -147,13 +187,12 @@ Consequently:
 - Ch. 3 is an orientation and visualization aid.
 - Paxinos labels remain authoritative for region assignment.
 - Nissl boundaries must not be interpreted as replacement region boundaries.
-- The source images, ABBA state, transform exports, ImageJ stack, checksums, and
+- The source images, ABBA state, transform reports, checksums, and
   build reports form the registration provenance record.
 
 ## Reproducible GitHub release asset
 
-The complete ABBA/QuPath package is too large for normal Git history. It is
-distributed as a GitHub release asset and described by:
+The compact immutable ABBA ZIP is committed and described by:
 
 ```text
 resources\optional_ch03\nissl_release_asset.json
@@ -165,7 +204,7 @@ The manifest pins:
 - asset filename;
 - direct release download URL;
 - SHA-256 checksum;
-- expected stack filename, shape, and AP order.
+- exact ABBA filename/hash, source range, AP direction and edge policy.
 
 The builder stores verified downloads under:
 
@@ -173,9 +212,17 @@ The builder stores verified downloads under:
 data\release_assets\0.3.0-prerelease\
 ```
 
-A partial or checksum-mismatched download is rejected. ZIP extraction is also
-checked for unsafe paths. A package is accepted only if it contains exactly one
-registered ImageJ stack and at least one ABBA state file.
+A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
+wrong source mapping, wrong Waxholm cache version/shape, or ambiguous AP
+direction aborts the build. The historical BDV `project.qpproj` path is retained
+as provenance only and is never opened.
+
+If the pinned Waxholm package is not yet present in the configured BrainGlobe
+directory, phase 5 downloads it automatically through BrainGlobe AtlasAPI. A
+normal first build therefore requires network access; subsequent builds reuse
+the version-, metadata-, orientation- and shape-validated cache. Network/GIN
+failures, an incomplete cache and a different downloaded package version have
+distinct error codes and remediation messages.
 
 ### Preparing the release asset
 
