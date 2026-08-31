@@ -248,10 +248,11 @@ echo [24/30] Installed atlas display baseline applied.
 call :phase "5/6" "Registered Nissl channel"
 echo.
 echo [24B/30] Importing final manually registered WHS/Nissl Ch03...
+if /I not "%WITH_NISSL%"=="NO" powershell -NoProfile -ExecutionPolicy Bypass -File "src\bootstrap_native_java.ps1" || goto fail
 if /I "%WITH_NISSL%"=="NO" (
     echo Explicit --without-nissl requested. Building legacy label-only atlas.
 ) else (
-    "%VENV_PY%" "src\native_abba_runtime.py" || goto fail
+    "%VENV_PY%" "src\native_abba_runtime.py" --verify-api || goto fail
     if "!NISSL_PACKAGE!"=="" (
         set "NISSL_PATH_FILE=%BUILDER_ROOT%\reports\nissl_release_asset\resolved_package_path.txt"
         "%VENV_PY%" "src\nissl_release_asset.py" resolve --root "%BUILDER_ROOT%" --path-file "!NISSL_PATH_FILE!" || goto fail

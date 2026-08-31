@@ -419,5 +419,49 @@ class NativeRuntimePolicyTests(unittest.TestCase):
             self.assertTrue(all(str(Path(temporary)) in value for key, value in env.items() if key != "BRAINGLOBE_DIR"))
 
 
+class NativeRuntimeInitializationTests(unittest.TestCase):
+    def test_missing_builder_java_is_classified(self):
+        from src.native_abba_runtime import NativeRuntimeError, RuntimePaths, validate_java
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(NativeRuntimeError, "JAVA_COMPONENT_MISSING"):
+                validate_java(RuntimePaths(Path(temporary)))
+
+    def test_native_api_initialization_uses_pinned_dependencies(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            fake_imagej = mock.Mock()
+            fake_ij = mock.Mock()
+            fake_imagej.init.return_value = fake_ij
+            fake_scyjava = mock.Mock()
+            fake_scyjava.jimport.side_effect = lambda name: "class:" + name
+            real_import = runtime.importlib.import_module
+            def imported(name):
+                if name == "imagej": return fake_imagej
+                if name == "scyjava": return fake_scyjava
+                return real_import(name)
+            with mock.patch.object(runtime, "install_vendor_package"), \
+                    mock.patch.object(runtime.importlib, "import_module", side_effect=imported):
+                ij, classes = runtime.initialize_native_api(paths)
+            self.assertIs(ij, fake_ij)
+            fake_imagej.init.assert_called_once_with(list(runtime.JAVA_DEPENDENCIES), mode="headless")
+            self.assertEqual(set(classes), set(runtime.REQUIRED_JAVA_CLASSES))
+
+    def test_wrong_state_runtime_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.abba"
+            with zipfile.ZipFile(state_path, "w") as archive:
+                archive.writestr("sources.json", "[]")
+                archive.writestr("state.json", json.dumps({"version": "0.10.4"}))
+                archive.writestr("_bdvdataset_0.xml", "")
+            with mock.patch.object(runtime, "STATE_SHA256", runtime.sha256(state_path)):
+                with self.assertRaisesRegex(runtime.NativeRuntimeError, "RUNTIME_VERSION"):
+                    runtime.inspect_state(state_path)
+
+
 if __name__ == "__main__":
     unittest.main()
