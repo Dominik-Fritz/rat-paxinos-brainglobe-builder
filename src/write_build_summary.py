@@ -46,6 +46,23 @@ def main() -> int:
         if nissl_requested and ch03_report_path.is_file() else {}
     )
     import_report = ch03_report.get("ch03_import", {})
+    reconstruction_report = ch03_report.get("abba_reconstruction", {})
+    if reconstruction_report:
+        reconstruction = reconstruction_report.get("reconstruction", {})
+        # Normalize the new ABBA reconstruction report to the established
+        # summary fields while retaining compatibility with v0.3.0 reports.
+        import_report = {
+            "stack_order": reconstruction_report.get(
+                "stack_order", reconstruction.get("source_direction")
+            ),
+            "mapped_plane_count": reconstruction.get("mapped_plane_count"),
+            "target_sequence_offset": reconstruction_report.get(
+                "target_sequence_offset", reconstruction.get("target_sequence_offset")
+            ),
+            "anterior_edge_policy": reconstruction.get("anterior_edge_policy"),
+            "duplicated_anterior_target_ap": reconstruction.get("duplicated_anterior_target_ap"),
+            "unused_target_sequence_positions": reconstruction.get("unused_target_sequence_positions"),
+        }
     lines = [
         "Rat Paxinos/Watson Atlas Builder - Build Summary",
         "=" * 72,
@@ -72,6 +89,9 @@ def main() -> int:
         "-" * 72,
         "The Paxinos annotation remains authoritative for region assignment.",
         "The registered Waxholm Nissl channel is a non-authoritative visual aid.",
+        ("The Nissl channel was reconstructed from the immutable, versioned ABBA state and the "
+         "pinned Waxholm source; no pre-rendered v0.3.0 stack was used." if nissl_installed else
+         "No reconstructed Nissl channel was installed."),
         "",
         f"Detailed reports: {reports}",
     ]

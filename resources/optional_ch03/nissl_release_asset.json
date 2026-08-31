@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
   "release": "0.3.0-prerelease",
-  "asset_name": "paxinos_watson_rat_nissl_registration_0.3.0.zip",
-  "download_url": "https://github.com/Dominik-Fritz/rat-paxinos-brainglobe-builder/releases/download/v0.3.0/paxinos_watson_rat_nissl_registration_0.3.0.zip",
-  "sha256": "1c26fef2c7e487bb9e1dff0f42330358138b25ccab6567549ef9db200ed4ce3e",
-  "expected_registered_stack": "registered_slices_ImageJ_stack.tif",
+  "asset_name": "",
+  "download_url": "",
+  "sha256": "",
+  "expected_abba_state": "final_for_V_0_3.abba",
+  "expected_abba_sha256": "e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06",
   "expected_registration_manifest": "registration_manifest.json",
   "expected_stack_shape": [
     588,
@@ -14,5 +15,6 @@
   "stack_order": "anterior-to-posterior",
   "target_sequence_offset": 1,
   "anterior_edge_policy": "duplicate_first_registered_plane",
-  "note": "The embedded nissl_registration_0_3_0 folder is the only local source. A pinned release URL may provide the same package after publication."
+  "legacy_registered_stack": "registered_slices_ImageJ_stack.tif (comparison-only; never a build fallback)",
+  "note": "The embedded ABBA ZIP is authoritative. Waxholm source voxels are separately version-pinned; the v0.3.0 rendered stack is not a release dependency."
 }
