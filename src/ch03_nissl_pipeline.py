@@ -99,6 +99,16 @@ def orient_annotation(labels: np.ndarray, path: Path) -> np.ndarray:
     return np.transpose(labels, tuple(permutation))
 
 
+def registered_target_ap_mapping(labels: np.ndarray) -> tuple[np.ndarray, int]:
+    """Apply the validated +1 offset to the non-empty Paxinos AP sequence."""
+    fixed_ap = np.flatnonzero(np.any(labels != 0, axis=(1, 2)))
+    if fixed_ap.size != 589:
+        raise NisslBuildError(
+            "TARGET_AP_MAPPING", f"expected 589 non-empty Paxinos AP planes, found {fixed_ap.size}"
+        )
+    return fixed_ap[1:], int(fixed_ap[0])
+
+
 def load_package_manifest(package: Path) -> dict:
     path = package / PACKAGE_MANIFEST_NAME
     if not path.is_file():
@@ -399,6 +409,9 @@ def build_from_package(package_path: str) -> int:
     state = validate_abba(package / manifest["abba_state_file"], manifest["abba_state_sha256"])
     source_path, source_report = find_waxholm_source(manifest)
     source = tifffile.memmap(source_path)
+    annotation_path = find_annotation_tiff()
+    labels = orient_annotation(tifffile.imread(annotation_path), annotation_path)
+    target_ap_indices, duplicated_target_ap = registered_target_ap_mapping(labels)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     raw = REPORT_DIR / "waxholm_anatomy_reference.raw.partial"
     temporary_tiff = ACTIVE_PATH.with_suffix(".tiff.partial")
@@ -406,7 +419,9 @@ def build_from_package(package_path: str) -> int:
     temporary_tiff.unlink(missing_ok=True)
     volume = None
     try:
-        reconstruction = render_volume(state, source, raw)
+        reconstruction = render_volume(
+            state, source, raw, target_ap_indices, duplicated_target_ap
+        )
         close_memmap(source)
         source = None
         volume = np.memmap(raw, mode="r", dtype=np.uint16, shape=TARGET_SHAPE)

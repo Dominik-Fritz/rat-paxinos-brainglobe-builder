@@ -142,6 +142,12 @@ inverse are sampled with the documented constant-zero boundary policy and
 listed per source/AP plane in the reconstruction report; converged pixels are
 never discarded merely because a different pixel in the same plane fails.
 
+The confirmed `+1` target offset is an offset within the 589 non-empty Paxinos
+label planes, not an absolute volume index. The 588 registrations are therefore
+written to `nonempty_ap[1:589]`, and `nonempty_ap[0]` receives the documented
+anterior duplicate. Empty leading/trailing AP planes in the 608-plane container
+must not shift the registered anatomy.
+
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
 build rather than producing an unverified channel.

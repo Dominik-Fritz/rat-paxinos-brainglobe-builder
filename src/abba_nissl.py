@@ -373,24 +373,32 @@ def allocate_memmap(path: Path, shape: tuple[int, ...], dtype=np.uint16) -> np.m
 
 
 def render_volume(state: AbbaState, source: np.ndarray, destination: Path,
+                  target_ap_indices: np.ndarray, duplicated_target_ap: int,
                   target_shape: tuple[int, int, int] = TARGET_SHAPE) -> dict:
     """Render all registrations plane-wise; never materialise the volume in RAM."""
     if source.shape[0] <= SOURCE_AP[1]:
         raise NisslBuildError("WHS_SOURCE_SHAPE", f"AP axis has only {source.shape[0]} planes; AP 776 is required")
+    target_ap_indices = np.asarray(target_ap_indices, dtype=np.int64)
+    if target_ap_indices.shape != (len(state.registrations),):
+        raise NisslBuildError("TARGET_AP_MAPPING", f"expected {len(state.registrations)} target AP indices, got {target_ap_indices.shape}")
+    if (np.diff(target_ap_indices) <= 0).any() or target_ap_indices[0] < 0 or target_ap_indices[-1] >= target_shape[0]:
+        raise NisslBuildError("TARGET_AP_MAPPING", f"target AP indices are invalid: {target_ap_indices.tolist()}")
+    if duplicated_target_ap < 0 or duplicated_target_ap >= target_shape[0] or duplicated_target_ap in target_ap_indices:
+        raise NisslBuildError("TARGET_AP_MAPPING", f"invalid duplicated anterior target AP: {duplicated_target_ap}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     output = allocate_memmap(destination, target_shape)
     output[:] = 0
     try:
         inverse_diagnostics = []
-        for registration in state.registrations:
-            target_ap = registration.source_id + 1
+        for registration, target_ap_value in zip(state.registrations, target_ap_indices, strict=True):
+            target_ap = int(target_ap_value)
             plane_diagnostics = {"source_id": registration.source_id,
                                  "waxholm_ap": registration.ap_index, "target_ap": target_ap}
             output[target_ap] = np.clip(render_plane(source[registration.ap_index], registration,
                                                       target_shape[1:], plane_diagnostics), 0, 65535).astype(np.uint16)
             if plane_diagnostics["noninvertible_target_pixels"]:
                 inverse_diagnostics.append(plane_diagnostics)
-        output[0] = output[1]  # scientifically confirmed anterior edge policy
+        output[duplicated_target_ap] = output[int(target_ap_indices[0])]
         output.flush()
     except MemoryError as exc:
         raise NisslBuildError("MEMORY_EXHAUSTED", "memory exhausted while rendering a plane") from exc
@@ -402,8 +410,9 @@ def render_volume(state: AbbaState, source: np.ndarray, destination: Path,
         del output
     return {**state.report, "target_grid_ap_si_lr": list(target_shape), "target_voxel_um": 40,
             "target_sequence_offset": 1, "anterior_edge_policy": "duplicate_first_registered_plane",
-            "mapped_plane_count": len(state.registrations), "mapped_target_ap_min_max": [1, 588],
-            "duplicated_anterior_target_ap": 0,
+            "mapped_plane_count": len(state.registrations),
+            "mapped_target_ap_min_max": [int(target_ap_indices[0]), int(target_ap_indices[-1])],
+            "duplicated_anterior_target_ap": int(duplicated_target_ap),
             "unused_target_sequence_positions": {"before": 1, "after": 0},
             "noninvertible_target_pixels_zero_filled": int(sum(
                 plane["noninvertible_target_pixels"] for plane in inverse_diagnostics

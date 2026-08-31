@@ -22,6 +22,14 @@ from src import write_build_summary
 
 
 class RegisteredStackTests(unittest.TestCase):
+    def test_target_offset_is_applied_to_nonempty_label_sequence_not_volume_zero(self) -> None:
+        labels = np.zeros((608, 1, 1), dtype=np.uint16)
+        labels[10:599] = 1
+        target_ap, duplicate = pipeline.registered_target_ap_mapping(labels)
+        self.assertEqual(duplicate, 10)
+        self.assertEqual((int(target_ap[0]), int(target_ap[-1])), (11, 598))
+        self.assertEqual(len(target_ap), 588)
+
     def test_anterior_to_posterior_preserves_stack_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
