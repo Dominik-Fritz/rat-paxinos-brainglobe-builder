@@ -13,6 +13,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+import os
+import tempfile
 import sys
 import tarfile
 from typing import Iterable
@@ -328,24 +330,51 @@ def write_nifti(active: np.ndarray, atlas: Path, name: str) -> Path:
     return destination
 
 
-def install_channel(import_report: dict) -> list[dict]:
-    if (import_report.get("renderer_backend") != "native_abba_0.11" or
-            import_report.get("native_parity_verified") is not True):
+def validate_install_provenance(import_report: dict) -> tuple[str, bool]:
+    """Allow native test output while keeping visual release approval separate."""
+    backend = import_report.get("renderer_backend")
+    native_verified = import_report.get("native_backend_verified") is True
+    parity = import_report.get("visual_parity_status", "pending")
+    if backend != "native_abba_0.11" or not native_verified:
         raise NisslBuildError(
             "NISSL_INSTALL_UNVERIFIED",
-            "refusing to install Ch03: renderer_backend must be native_abba_0.11 and "
-            "native_parity_verified must be true",
+            "refusing to install Ch03: only a verified native_abba_0.11 execution may be installed",
         )
-    active = tifffile.imread(ACTIVE_PATH)
+    if parity not in {"pending", "passed", "failed"}:
+        raise NisslBuildError("VISUAL_PARITY_STATUS", f"invalid visual_parity_status: {parity!r}")
+    if parity == "failed":
+        raise NisslBuildError("VISUAL_PARITY_FAILED", "native output failed visual validation")
+    return parity, parity == "passed"
+
+
+def _transactional_atlas_install(atlas: Path, active: np.ndarray, import_report: dict) -> dict:
+    """Stage every artifact, validate it, then atomically activate or roll back."""
+    parity, release_eligible = validate_install_provenance(import_report)
     name = "waxholm_anatomy_reference"
-    installed: list[dict] = []
-    for atlas in atlas_candidates():
-        metadata_path = atlas / "metadata.json"
-        if not (metadata_path.is_file() and (atlas / "annotation.tiff").is_file() and (atlas / "annotation.nii.gz").is_file()):
-            continue
-        tiff_path = atlas / f"{name}.tiff"
-        shutil.copy2(ACTIVE_PATH, tiff_path)
-        nifti_path = write_nifti(active, atlas, name)
+    metadata_path = atlas / "metadata.json"
+    destinations = [atlas / f"{name}.tiff", atlas / f"{name}.nii.gz", metadata_path]
+    backup_dir = Path(tempfile.mkdtemp(prefix=".ch03-backup-", dir=atlas))
+    stage_dir = Path(tempfile.mkdtemp(prefix=".ch03-stage-", dir=atlas))
+    existed = {path: path.exists() for path in destinations}
+    try:
+        for path in destinations:
+            if path.exists():
+                shutil.copy2(path, backup_dir / path.name)
+        staged_tiff = stage_dir / f"{name}.tiff"
+        shutil.copy2(ACTIVE_PATH, staged_tiff)
+        with tifffile.TiffFile(staged_tiff) as tif:
+            if tuple(tif.series[0].shape) != TARGET_SHAPE:
+                raise NisslBuildError("OUTPUT_VALIDATION", "staged TIFF shape is invalid")
+        staged_nifti = write_nifti(active, stage_dir, name) if (stage_dir / "annotation.nii.gz").exists() else None
+        # write_nifti needs the authoritative header; stage explicitly using it.
+        if staged_nifti is None:
+            annotation = nib.load(str(atlas / "annotation.nii.gz"))
+            data = active if tuple(annotation.shape[:3]) == tuple(active.shape) else active.transpose(2, 0, 1)
+            staged_nifti = stage_dir / f"{name}.nii.gz"
+            nib.save(nib.Nifti1Image(data, annotation.affine, annotation.header.copy()), staged_nifti)
+        check = nib.load(str(staged_nifti)); check_shape = tuple(check.shape); check.uncache()
+        if check_shape != tuple(nib.load(str(atlas / "annotation.nii.gz")).shape[:3]):
+            raise NisslBuildError("OUTPUT_VALIDATION", "staged NIfTI shape is invalid")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         references = metadata.get("additional_references", [])
         if isinstance(references, str): references = [references]
@@ -355,21 +384,41 @@ def install_channel(import_report: dict) -> list[dict]:
             "installed": True, "release": "0.3.0-prerelease", "reference_name": name,
             "stack_order": import_report["stack_order"],
             "target_sequence_offset": import_report["target_sequence_offset"],
-            "renderer_backend": import_report["renderer_backend"],
-            "native_parity_verified": import_report["native_parity_verified"],
-            "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
-            "display_preferences": {
-                "color_hex": "FFD54F",
-                "color_name": "warm yellow",
-                "opacity": 0.22,
-                "status": "client_hint",
-                "note": "Preferred ABBA display only; clients may require applying this converter setting manually.",
-            },
+            "renderer_backend": "native_abba_0.11",
+            "native_backend_verified": True,
+            "visual_parity_status": parity,
+            "release_eligible": release_eligible,
+            "interpretation": "Native ABBA/BigWarp-rendered visual aid; Paxinos labels remain authoritative.",
         }
-        metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-        installed.append({"atlas": str(atlas), "tiff": str(tiff_path), "nifti": str(nifti_path)})
-    if not installed:
-        raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
+        staged_metadata = stage_dir / "metadata.json"
+        staged_metadata.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+        for staged, destination in zip((staged_tiff, staged_nifti, staged_metadata), destinations):
+            os.replace(staged, destination)
+        return {"atlas": str(atlas), "tiff": str(destinations[0]), "nifti": str(destinations[1]),
+                "visual_parity_status": parity, "release_eligible": release_eligible}
+    except Exception:
+        for path in destinations:
+            backup = backup_dir / path.name
+            if backup.exists(): os.replace(backup, path)
+            elif not existed[path]: path.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def install_channel(import_report: dict) -> list[dict]:
+    validate_install_provenance(import_report)
+    active = tifffile.imread(ACTIVE_PATH)
+    try:
+        installed = []
+        for atlas in atlas_candidates():
+            if all((atlas / name).is_file() for name in ("metadata.json", "annotation.tiff", "annotation.nii.gz")):
+                installed.append(_transactional_atlas_install(atlas, active, import_report))
+        if not installed:
+            raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
+    finally:
+        close_memmap(active)
     write_report({"ch03_install": installed})
     print(f"  Installed targets: {len(installed)}")
     return installed

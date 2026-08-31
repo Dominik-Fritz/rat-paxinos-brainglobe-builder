@@ -379,8 +379,44 @@ class BuildSummaryTests(unittest.TestCase):
             self.assertIn("Mapped Nissl planes: 588", summary)
             self.assertIn("Duplicated anterior target AP: 0", summary)
             self.assertIn("Nissl renderer backend: unverified_or_legacy", summary)
-            self.assertIn("Native ABBA parity verified: False", summary)
+            self.assertIn("Native backend verified: False", summary)
+            self.assertIn("Visual parity status: not_applicable", summary)
+            self.assertIn("Release eligible: False", summary)
             self.assertNotIn("not recorded", summary)
+
+
+class NativeStatusTests(unittest.TestCase):
+    def test_python_renderer_cannot_install(self):
+        with self.assertRaisesRegex(pipeline.NisslBuildError, "NISSL_INSTALL_UNVERIFIED"):
+            pipeline.validate_install_provenance({"renderer_backend": "experimental_python_tps"})
+
+    def test_native_pending_can_install_but_is_not_release_eligible(self):
+        parity, eligible = pipeline.validate_install_provenance({
+            "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+            "visual_parity_status": "pending"})
+        self.assertEqual(parity, "pending")
+        self.assertFalse(eligible)
+
+    def test_native_passed_is_release_eligible(self):
+        self.assertEqual(pipeline.validate_install_provenance({
+            "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+            "visual_parity_status": "passed"}), ("passed", True))
+
+
+class NativeRuntimePolicyTests(unittest.TestCase):
+    def test_direct_vendor_layout_and_state_binding(self):
+        from src import native_abba_runtime as runtime
+        runtime.validate_vendor()
+        report = runtime.inspect_state(Path(__file__).parents[1] / "resources/optional_ch03/nissl_registration_0_3_0/final_for_V_0_3.abba")
+        self.assertEqual(report["source_id_range"], [0, 587])
+        self.assertEqual(report["waxholm_ap_range"], [189, 776])
+
+    def test_cache_paths_are_builder_local(self):
+        from src.native_abba_runtime import RuntimePaths
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = RuntimePaths(Path(temporary) / "native")
+            env = paths.environment()
+            self.assertTrue(all(str(Path(temporary)) in value for key, value in env.items() if key != "BRAINGLOBE_DIR"))
 
 
 if __name__ == "__main__":
