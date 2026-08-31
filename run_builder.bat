@@ -264,7 +264,7 @@ if /I "%WITH_NISSL%"=="NO" (
         goto fail
     )
     echo Nissl package: !NISSL_PACKAGE!
-    "%VENV_PY%" "src\ch03_nissl_pipeline.py" build-from-package "!NISSL_PACKAGE!" || goto fail
+    "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!" || goto fail
 )
 
 call :phase "6/6" "ABBA integration and final report"

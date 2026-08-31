@@ -53,9 +53,8 @@ def main() -> int:
     import_report = ch03_report.get("ch03_import", {})
     reconstruction_report = ch03_report.get("abba_reconstruction", {})
     if reconstruction_report:
-        reconstruction = reconstruction_report.get("reconstruction", {})
-        # Normalize the new ABBA reconstruction report to the established
-        # summary fields while retaining compatibility with v0.3.0 reports.
+        reconstruction = reconstruction_report.get("reconstruction", reconstruction_report)
+        # Normalize native and legacy diagnostic reports to summary fields.
         import_report = {
             "stack_order": reconstruction_report.get(
                 "stack_order", reconstruction.get("source_direction")
@@ -66,7 +65,9 @@ def main() -> int:
             ),
             "anterior_edge_policy": reconstruction.get("anterior_edge_policy"),
             "duplicated_anterior_target_ap": reconstruction.get("duplicated_anterior_target_ap"),
-            "unused_target_sequence_positions": reconstruction.get("unused_target_sequence_positions"),
+            "unused_target_sequence_positions": reconstruction.get(
+                "unused_target_sequence_positions", {"before": 1, "after": 0}
+            ),
         }
     lines = [
         "Rat Paxinos/Watson Atlas Builder - Build Summary",

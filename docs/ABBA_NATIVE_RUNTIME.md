@@ -26,3 +26,20 @@ visual acceptance may change those fields to `passed` and `true`.
 The uploaded vendor directory contains no upstream `METADATA`, `dist-info`, or
 license file. It is therefore retained as source provenance only; this
 repository does not infer additional redistribution rights from its presence.
+
+## Native rendering path
+
+`native_abba_renderer.py` materializes the 588 required Waxholm planes only in
+the builder-local temporary directory. It rewrites all 998 historical loader
+entries to local Bio-Formats TIFF openers and binds `sources.json` viewsetups
+197–784 explicitly to source IDs 0–587 / Waxholm AP 189–776. `sources.json`,
+`state.json`, every BDV view registration, and every ABBA action are otherwise
+preserved. The rewritten archive contains no historical QuPath path.
+
+ABBA loads that portable archive through its vendored `ABBAStateLoadCommand`.
+The renderer requires 588 Java slices, calls the vendored
+`ExportResampledSlicesToBDVSourceCommand` at an explicit 40-µm isotropic grid,
+and discovers its output by the Java `SourceAndConverter` type rather than by a
+guessed command-output name. Only that native BDV result can set
+`native_backend_verified: true`; it is installed with visual parity `pending`
+and remains non-release-eligible until manual acceptance.
