@@ -329,6 +329,13 @@ def write_nifti(active: np.ndarray, atlas: Path, name: str) -> Path:
 
 
 def install_channel(import_report: dict) -> list[dict]:
+    if (import_report.get("renderer_backend") != "native_abba_0.11" or
+            import_report.get("native_parity_verified") is not True):
+        raise NisslBuildError(
+            "NISSL_INSTALL_UNVERIFIED",
+            "refusing to install Ch03: renderer_backend must be native_abba_0.11 and "
+            "native_parity_verified must be true",
+        )
     active = tifffile.imread(ACTIVE_PATH)
     name = "waxholm_anatomy_reference"
     installed: list[dict] = []
@@ -348,6 +355,8 @@ def install_channel(import_report: dict) -> list[dict]:
             "installed": True, "release": "0.3.0-prerelease", "reference_name": name,
             "stack_order": import_report["stack_order"],
             "target_sequence_offset": import_report["target_sequence_offset"],
+            "renderer_backend": import_report["renderer_backend"],
+            "native_parity_verified": import_report["native_parity_verified"],
             "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
             "display_preferences": {
                 "color_hex": "FFD54F",
@@ -457,8 +466,14 @@ def build_from_package(package_path: str, experimental_python_render: bool = Fal
     report = {"source": source_report, "reconstruction": reconstruction,
               "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
               "authoritative_registration_source": str(state.path),
-              "legacy_registered_stack_used": False}
+              "legacy_registered_stack_used": False,
+              "renderer_backend": "experimental_python_tps",
+              "native_parity_verified": False}
     write_report({"abba_reconstruction": report})
+    if experimental_python_render:
+        print("  Experimental reconstruction completed for diagnostics only.")
+        print("  It was NOT installed, packaged, or marked as a successful native Nissl channel.")
+        return 0
     install_channel(report)
     archive = repack_candidate()
     print(f"  Candidate archive: {archive}")

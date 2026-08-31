@@ -160,6 +160,11 @@ Python TPS implementation as scientifically identical. A development-only
 `--experimental-python-render` switch remains for diagnostics; `run_builder.bat`
 does not enable it. Release rendering must use ABBA 0.11/BigWarp's native Java
 transform stack and pass the separate v0.3.0 numerical and visual comparison.
+Defense in depth also prevents `install_channel` from accepting any output
+unless its provenance states `renderer_backend=native_abba_0.11` and
+`native_parity_verified=true`. The experimental renderer writes diagnostics
+only; it cannot install or package Ch03. BUILD_SUMMARY exposes both fields so a
+pre-gate or stale installed channel cannot be mistaken for native output.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the

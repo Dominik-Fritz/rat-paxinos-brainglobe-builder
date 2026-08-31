@@ -22,6 +22,13 @@ from src import write_build_summary
 
 
 class RegisteredStackTests(unittest.TestCase):
+    def test_unverified_renderer_cannot_be_installed(self) -> None:
+        with self.assertRaisesRegex(pipeline.NisslBuildError, "NISSL_INSTALL_UNVERIFIED"):
+            pipeline.install_channel({
+                "renderer_backend": "experimental_python_tps",
+                "native_parity_verified": False,
+            })
+
     def test_release_build_rejects_unverified_python_bigwarp_renderer(self) -> None:
         with self.assertRaisesRegex(pipeline.NisslBuildError, "ABBA_NATIVE_PARITY_REQUIRED"):
             pipeline.require_scientific_render_readiness(False)
@@ -371,6 +378,8 @@ class BuildSummaryTests(unittest.TestCase):
             self.assertIn("Nissl AP order: anterior-to-posterior", summary)
             self.assertIn("Mapped Nissl planes: 588", summary)
             self.assertIn("Duplicated anterior target AP: 0", summary)
+            self.assertIn("Nissl renderer backend: unverified_or_legacy", summary)
+            self.assertIn("Native ABBA parity verified: False", summary)
             self.assertNotIn("not recorded", summary)
 
 
