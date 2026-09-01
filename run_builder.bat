@@ -117,20 +117,24 @@ echo [4/30] Running syntax smoke test...
 
 call :phase "2/6" "Source data and ontology preparation"
 echo.
+set "CURRENT_STAGE=Cleaning previous generated outputs"
 echo [5/30] Cleaning previous generated outputs...
 if exist "src\v27_clean_generated_outputs.py" "%VENV_PY%" "src\v27_clean_generated_outputs.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Recording environment"
 echo [6/30] Recording environment...
 "%VENV_PY%" "src\record_environment.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Inspecting input files"
 echo [7/30] Inspecting input files...
 "%VENV_PY%" "src\inspect_inputs.py" || goto fail
 
 echo.
 
 echo.
+set "CURRENT_STAGE=Minimal Paxinos source download and validation"
 echo [7B/30] Checking required Paxinos source data...
 REM V32.26 DATA MANAGER AUTODOWNLOAD START
 REM Ensure minimal Paxinos/Watson source data before the label analysis steps.
@@ -145,48 +149,59 @@ echo [DATA] Checking/downloading minimal Paxinos source data...
 if errorlevel 1 goto fail
 REM V32.26 DATA MANAGER AUTODOWNLOAD END
 
+set "CURRENT_STAGE=Paxinos source preflight"
 "%VENV_PY%" "src\release_data_preflight.py" || goto missing_data
+set "CURRENT_STAGE=Analyzing Paxinos labels"
 echo [8/30] Analyzing Paxinos labels...
 "%VENV_PY%" "src\analyze_paxinos_labels.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Resolving placeholder label context"
 echo [9/30] Resolving placeholder label context...
 "%VENV_PY%" "src\analyze_placeholder_context.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Building draft structures"
 echo [10/30] Building draft structures.json...
 "%VENV_PY%" "src\build_structures_json.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Applying BrainGlobe root fix"
 echo [11/30] Applying BrainGlobe root fix...
 "%VENV_PY%" "src\v11_fix_brainglobe_root.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Cleaning draft structures"
 echo [12/30] Cleaning labels/names for draft structures...
 "%VENV_PY%" "src\v15_cleanup_structures_labels.py" --stage draft || goto fail
 
 echo.
+set "CURRENT_STAGE=Building hierarchical draft structures"
 echo [13/30] Building hierarchical draft structures...
 "%VENV_PY%" "src\v16_build_hierarchical_structures.py" --stage draft || goto fail
 
 call :phase "3/6" "Provisional atlas construction and validation"
 echo.
+set "CURRENT_STAGE=Building provisional atlas"
 echo [14/30] Building provisional atlas folder...
 "%VENV_PY%" "src\build_provisional_brainglobe_atlas.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Fixing provisional metadata"
 echo [15/30] Fixing provisional metadata...
 "%VENV_PY%" "src\v13_fix_brainglobe_metadata.py" --target provisional || goto fail
 "%VENV_PY%" "src\v22_fix_metadata_compliance.py" --target provisional || goto fail
 "%VENV_PY%" "src\v32_fix_no_additional_references.py" --target provisional || goto fail
 
 echo.
+set "CURRENT_STAGE=Validating provisional ABBA compatibility"
 echo [16/30] Fixing provisional ABBA structure/root compatibility...
 "%VENV_PY%" "src\v29_fix_abba_structure_root.py" --target provisional || goto fail
 "%VENV_PY%" "src\v30_enrich_abba_java_structures.py" --target provisional || goto fail
 "%VENV_PY%" "src\v27_validate_root_compatibility.py" --target provisional || goto fail
 
 echo.
+set "CURRENT_STAGE=Exporting provisional atlas"
 echo [17/30] Exporting provisional TIFFs and hemispheres...
 "%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target provisional || goto fail
 "%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target provisional || goto fail
@@ -195,15 +210,18 @@ echo [17b/30] Leaving provisional atlas at native package stage...
 echo Final three-channel ABBA display layout is applied only after native BrainGlobe install.
 
 echo.
+set "CURRENT_STAGE=Validating provisional atlas package"
 echo [18/30] Validating provisional atlas package...
 "%VENV_PY%" "src\validate_provisional_atlas_package.py" || goto fail
 
 call :phase "4/6" "Release candidate construction and native installation"
 echo.
+set "CURRENT_STAGE=Building official candidate"
 echo [19/30] Building official candidate package...
 "%VENV_PY%" "src\build_official_candidate.py" || goto fail
 
 echo.
+set "CURRENT_STAGE=Finalizing official candidate metadata"
 echo [20/30] Cleaning/enriching official candidate structures...
 "%VENV_PY%" "src\v15_cleanup_structures_labels.py" --stage official || goto fail
 "%VENV_PY%" "src\v16_build_hierarchical_structures.py" --stage official || goto fail
@@ -215,6 +233,7 @@ echo [20/30] Cleaning/enriching official candidate structures...
 "%VENV_PY%" "src\v27_validate_root_compatibility.py" --target official || goto fail
 
 echo.
+set "CURRENT_STAGE=Exporting official candidate"
 echo [21/30] Exporting official TIFFs and hemispheres...
 "%VENV_PY%" "src\v14_export_brainglobe_tiffs.py" --target official || goto fail
 "%VENV_PY%" "src\v31_create_hemispheres_tiff.py" --target official || goto fail
@@ -223,17 +242,21 @@ echo [21b/30] Leaving official candidate at native package stage...
 echo Final three-channel ABBA display layout is applied only after native BrainGlobe install.
 
 echo.
+set "CURRENT_STAGE=Installing native BrainGlobe atlas"
 echo [22/30] Installing clean native BrainGlobe atlas...
 "%VENV_PY%" "src\v25_clean_native_brainglobe_install.py" --native-install --clean-install || goto fail
 
 echo.
+set "CURRENT_STAGE=Cleaning installed atlas metadata"
 echo [23/30] Applying installed metadata/channel cleanup...
 "%VENV_PY%" "src\v32_fix_no_additional_references.py" --target installed || goto fail
 
 echo.
+set "CURRENT_STAGE=Applying curated Paxinos acronyms"
 echo [23a/30] Applying curated Paxinos acronym resource to generated and installed metadata...
 "%VENV_PY%" "src\apply_curated_acronym_resource.py" --root "%BUILDER_ROOT%" --apply --require-installed || goto fail
 echo.
+set "CURRENT_STAGE=Applying installed display layout"
 echo [23b/30] Applying final V43C three-channel ABBA display layout to installed BrainGlobe atlas...
 if not exist "src\v43c_restore_v43_distance_channel.py" (
     echo ERROR: Missing src\v43c_restore_v43_distance_channel.py
@@ -247,10 +270,13 @@ echo [24/30] Installed atlas display baseline applied.
 
 call :phase "5/6" "Registered Nissl channel"
 echo.
+set "CURRENT_STAGE=Native ABBA Nissl rendering"
 echo [24B/30] Importing final manually registered WHS/Nissl Ch03...
+if /I not "%WITH_NISSL%"=="NO" powershell -NoProfile -ExecutionPolicy Bypass -File "src\bootstrap_native_java.ps1" || goto fail
 if /I "%WITH_NISSL%"=="NO" (
     echo Explicit --without-nissl requested. Building legacy label-only atlas.
 ) else (
+    "%VENV_PY%" "src\native_abba_runtime.py" --verify-api || goto fail
     if "!NISSL_PACKAGE!"=="" (
         set "NISSL_PATH_FILE=%BUILDER_ROOT%\reports\nissl_release_asset\resolved_package_path.txt"
         "%VENV_PY%" "src\nissl_release_asset.py" resolve --root "%BUILDER_ROOT%" --path-file "!NISSL_PATH_FILE!" || goto fail
@@ -262,11 +288,14 @@ if /I "%WITH_NISSL%"=="NO" (
         goto fail
     )
     echo Nissl package: !NISSL_PACKAGE!
-    "%VENV_PY%" "src\ch03_nissl_pipeline.py" build-from-package "!NISSL_PACKAGE!" || goto fail
+    "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!" || goto fail
+    echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
+    set "BUILD_WARNINGS=YES"
 )
 
 call :phase "6/6" "ABBA integration and final report"
 echo.
+set "CURRENT_STAGE=Applying optional ABBA visibility patch"
 echo [25/30] Optional ABBA visibility patch...
 if /I "%PATCH_ABBA%"=="YES" (
     "%VENV_PY%" "src\v17_patch_abba_visibility.py" --all
@@ -382,6 +411,7 @@ exit /b 0
 
 
 :missing_data
+set "FORCED_FAILURE_EXIT_CODE=2"
 echo.
 echo Required Paxinos source data are missing.
 echo See reports\release_data_preflight_summary.txt and reports\release_data_preflight_report.json.
@@ -400,13 +430,16 @@ echo.
 goto fail
 
 :fail
+set "FAILURE_EXIT_CODE=%ERRORLEVEL%"
+if defined FORCED_FAILURE_EXIT_CODE set "FAILURE_EXIT_CODE=%FORCED_FAILURE_EXIT_CODE%"
+if "%FAILURE_EXIT_CODE%"=="0" set "FAILURE_EXIT_CODE=1"
 echo.
 if not exist "%BUILDER_ROOT%\reports" mkdir "%BUILDER_ROOT%\reports"
 >"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Rat Paxinos/Watson Atlas Builder - Build Summary
 >>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Status: FAILED
 >>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Last stage: %CURRENT_STAGE%
 >>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Started: %BUILD_STARTED%
-if defined VENV_PY if exist "%VENV_PY%" "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status failed --stage "%CURRENT_STAGE%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%"
+if defined VENV_PY if exist "%VENV_PY%" "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status failed --stage "%CURRENT_STAGE%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" --failure-exit-code "%FAILURE_EXIT_CODE%"
 echo +======================================================================+
 echo ^| BUILD FAILED                                                         ^|
 echo +======================================================================+
