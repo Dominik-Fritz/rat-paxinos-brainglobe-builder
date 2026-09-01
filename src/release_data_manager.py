@@ -146,6 +146,11 @@ def write_reports(root: Path, report: dict) -> None:
         for d in report["downloads"]:
             lines.append(f"- {d['filename']}: {d['action']} success={d.get('success')} error={d.get('error')}")
         lines.append("")
+    if report.get("warnings"):
+        lines.append("Warnings:")
+        for warning in report["warnings"]:
+            lines.append(f"- {warning}")
+        lines.append("")
     if report.get("errors"):
         lines.append("Errors:")
         for e in report["errors"]:
@@ -165,6 +170,7 @@ def run(root: Path, mode: str, include_optional: bool) -> int:
     raw_dir.mkdir(parents=True, exist_ok=True)
     downloads = []
     errors = []
+    warnings = []
 
     before = [inspect_file(raw_dir, k, v) for k, v in FILES.items()]
 
@@ -182,14 +188,21 @@ def run(root: Path, mode: str, include_optional: bool) -> int:
             ok, err = download_file(url, raw_dir / spec["filename"])
             downloads.append({"filename": spec["filename"], "action": "downloaded" if ok else "download_failed", "success": ok, "error": err, "url": url})
             if not ok:
-                errors.append(f"Could not download {spec['filename']}: {err}")
+                message = f"Could not download {spec['filename']}: {err}"
+                if spec.get("required"):
+                    errors.append(message)
+                else:
+                    warnings.append(message + " (optional; build continues)")
 
     after = [inspect_file(raw_dir, k, v) for k, v in FILES.items()]
     required_ok = all((not r["required"]) or r["status"] == "ok" for r in after)
     optional_bad = [r for r in after if (not r["required"]) and r["exists"] and r["status"] != "ok"]
     if optional_bad:
         for r in optional_bad:
-            errors.append(f"Optional file exists but failed validation: {r['filename']} status={r['status']}")
+            warnings.append(
+                f"Optional file failed validation and will not be trusted: "
+                f"{r['filename']} status={r['status']}"
+            )
 
     report = {
         "version": "V32.26 release data manager",
@@ -203,6 +216,7 @@ def run(root: Path, mode: str, include_optional: bool) -> int:
         "files_before": before,
         "files": after,
         "errors": errors,
+        "warnings": warnings,
         "passed": bool(required_ok and not errors),
     }
     write_reports(root, report)
@@ -216,6 +230,10 @@ def run(root: Path, mode: str, include_optional: bool) -> int:
     print("")
     for r in after:
         print(f"- {r['key']}: {r['status']} :: {r['filename']}")
+    if warnings:
+        print("\nWarnings:")
+        for warning in warnings:
+            print(f"- {warning}")
     if errors:
         print("\nErrors:")
         for e in errors:

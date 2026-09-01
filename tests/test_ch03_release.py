@@ -463,5 +463,35 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
                     runtime.inspect_state(state_path)
 
 
+class FailedBuildSummaryTests(unittest.TestCase):
+    def test_failed_run_does_not_claim_preexisting_nissl_as_current(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlas = root / "atlas"
+            atlas.mkdir()
+            (atlas / "annotation.tiff").touch()
+            (atlas / "waxholm_anatomy_reference.tiff").touch()
+            (atlas / "metadata.json").write_text(json.dumps({
+                "additional_references": ["waxholm_anatomy_reference"],
+                "optional_ch03_registration": {
+                    "renderer_backend": "native_abba_0.11",
+                    "native_backend_verified": True,
+                    "visual_parity_status": "passed",
+                    "release_eligible": True,
+                },
+            }), encoding="utf-8")
+            argv = ["write_build_summary.py", "--root", str(root), "--status", "failed",
+                    "--stage", "Paxinos source preflight", "--failure-exit-code", "2"]
+            with mock.patch.object(write_build_summary, "locate_installed_atlas", return_value=atlas), \
+                    mock.patch.object(sys, "argv", argv):
+                self.assertEqual(write_build_summary.main(), 0)
+            summary = (root / "reports/BUILD_SUMMARY.txt").read_text(encoding="utf-8")
+            self.assertIn("Failure exit code: 2", summary)
+            self.assertIn("pre-existing; not validated by this failed build", summary)
+            self.assertIn("Nissl renderer backend: not produced by failed build", summary)
+            self.assertIn("Native backend verified: False", summary)
+            self.assertNotIn("Native ABBA 0.11 backend execution is verified", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
