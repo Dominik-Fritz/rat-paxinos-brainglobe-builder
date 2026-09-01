@@ -514,6 +514,7 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
                 return real_import(name)
             java_version = mock.Mock(returncode=0, stdout="", stderr='openjdk version "17.0.14"')
             with mock.patch.object(runtime, "install_vendor_package"), \
+                    mock.patch.object(runtime, "validate_maven"), \
                     mock.patch.object(runtime, "validate_python_bridge", return_value=dict(runtime.PYTHON_BRIDGE_VERSIONS)), \
                     mock.patch.object(runtime.importlib, "import_module", side_effect=imported), \
                     mock.patch.object(runtime.subprocess, "run", return_value=java_version):
@@ -521,6 +522,42 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
             self.assertIs(ij, fake_ij)
             fake_imagej.init.assert_called_once_with(list(runtime.JAVA_DEPENDENCIES), mode="headless")
             self.assertEqual(set(classes), set(runtime.REQUIRED_JAVA_CLASSES))
+
+    def test_missing_builder_maven_is_classified(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "MAVEN_COMPONENT_MISSING"):
+                runtime.validate_maven(runtime.RuntimePaths(Path(temporary)))
+
+    def test_wrong_maven_marker_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.maven_home / "bin" / ("mvn.cmd" if runtime.os.name == "nt" else "mvn")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            paths.maven.mkdir(parents=True, exist_ok=True)
+            (paths.maven / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "3.8.8"}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "MAVEN_VERSION"):
+                runtime.validate_maven(paths)
+
+    def test_pinned_builder_maven_is_accepted(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.maven_home / "bin" / ("mvn.cmd" if runtime.os.name == "nt" else "mvn")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            paths.maven.mkdir(parents=True, exist_ok=True)
+            (paths.maven / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "3.9.9"}), encoding="utf-8"
+            )
+            completed = mock.Mock(returncode=0, stdout="Apache Maven 3.9.9", stderr="")
+            with mock.patch.object(runtime.subprocess, "run", return_value=completed) as invoked:
+                self.assertEqual(runtime.validate_maven(paths), executable)
+            self.assertIn(str(executable), invoked.call_args.args[0])
 
     def test_corrupt_java_marker_is_classified(self):
         from src import native_abba_runtime as runtime

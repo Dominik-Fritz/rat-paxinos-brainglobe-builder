@@ -77,6 +77,12 @@ class RuntimePaths:
     @property
     def maven(self) -> Path: return self.root / "maven"
     @property
+    def maven_home(self) -> Path: return self.maven / "apache-maven-3.9.9"
+    @property
+    def maven_repository(self) -> Path: return self.root / "maven_repository"
+    @property
+    def maven_user_home(self) -> Path: return self.root / "maven_user_home"
+    @property
     def imagej(self) -> Path: return self.root / "imagej"
     @property
     def downloads(self) -> Path: return self.root / "downloads"
@@ -88,7 +94,8 @@ class RuntimePaths:
     def reports(self) -> Path: return ROOT / "reports/native_abba"
 
     def create(self) -> None:
-        for path in (self.java, self.jgo, self.maven, self.imagej, self.downloads,
+        for path in (self.java, self.jgo, self.maven, self.maven_repository, self.maven_user_home,
+                     self.imagej, self.downloads,
                      self.temporary, self.brainglobe, self.reports):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -97,7 +104,11 @@ class RuntimePaths:
         return {
             "JAVA_HOME": str(self.java),
             "JGO_CACHE_DIR": str(self.jgo),
-            "MAVEN_USER_HOME": str(self.maven),
+            "MAVEN_USER_HOME": str(self.maven_user_home),
+            "MAVEN_OPTS": (
+                f'-Duser.home="{self.maven_user_home}" '
+                f'-Dmaven.repo.local="{self.maven_repository}"'
+            ),
             "SCYJAVA_CONFIG_DIR": str(self.imagej),
             "CJDK_CACHE_DIR": str(self.java),
             "TMP": str(self.temporary),
@@ -108,7 +119,9 @@ class RuntimePaths:
     def activate(self) -> dict[str, str]:
         env = self.environment()
         os.environ.update(env)
-        os.environ["PATH"] = str(self.java / "bin") + os.pathsep + os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(
+            (str(self.java / "bin"), str(self.maven_home / "bin"), os.environ.get("PATH", ""))
+        )
         return env
 
 
@@ -204,6 +217,37 @@ def validate_java(paths: RuntimePaths) -> Path:
     return executable
 
 
+
+def validate_maven(paths: RuntimePaths) -> Path:
+    executable = paths.maven_home / "bin" / ("mvn.cmd" if os.name == "nt" else "mvn")
+    marker = paths.maven / "runtime-manifest.json"
+    if not executable.is_file():
+        raise NativeRuntimeError("MAVEN_COMPONENT_MISSING", f"builder-local Maven is missing: {executable}")
+    if not marker.is_file():
+        raise NativeRuntimeError("MAVEN_CACHE_CORRUPT", f"runtime marker is missing: {marker}")
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise NativeRuntimeError("MAVEN_CACHE_CORRUPT", f"invalid runtime marker: {exc}") from exc
+    if manifest.get("pinned_version") != "3.9.9":
+        raise NativeRuntimeError("MAVEN_VERSION", f"expected 3.9.9, marker reports {manifest.get('pinned_version')!r}")
+    try:
+        command = [str(executable), "--version"]
+        if os.name == "nt":
+            command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", *command]
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=30, check=False,
+            env=os.environ.copy(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise NativeRuntimeError("MAVEN_CACHE_CORRUPT", f"builder-local Maven cannot execute: {exc}") from exc
+    output = (completed.stdout + completed.stderr).strip()
+    if completed.returncode != 0:
+        raise NativeRuntimeError("MAVEN_CACHE_CORRUPT", f"mvn --version failed: {output}")
+    if "Apache Maven 3.9.9" not in output:
+        raise NativeRuntimeError("MAVEN_VERSION", f"expected Apache Maven 3.9.9, got: {output}")
+    return executable
+
 def install_vendor_package() -> Path:
     """Expose the direct vendor directory under its original package name."""
     target = ROOT / "data/native_abba_runtime/python/abba_python"
@@ -257,6 +301,7 @@ def initialize_native_api(paths: RuntimePaths | None = None):
     paths = paths or RuntimePaths()
     paths.activate()
     validate_java(paths)
+    validate_maven(paths)
     install_vendor_package()
     validate_python_bridge()
     try:

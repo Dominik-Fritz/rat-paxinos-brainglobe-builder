@@ -11,6 +11,14 @@ archive against the publisher's SHA-256 before extraction, and writes the URL
 and observed hash to `runtime-manifest.json`. A mismatching marker, archive, or
 Java layout is rejected rather than repaired using a global Java installation.
 
+The Java dependency resolver also requires a Maven executable. The builder
+therefore installs Apache Maven `3.9.9` below
+`data/native_abba_runtime/maven`, verifies the downloaded archive against the
+publisher's SHA-512, and confines both Maven's user home and artifact repository
+to `data/native_abba_runtime`. Neither `PATH` nor the user's `.m2` directory is
+used as a fallback. Missing, corrupt, and wrong-version Maven runtimes are
+reported separately.
+
 ABBA 0.11.0 initializes PyImageJ with the exact Maven coordinates recorded by
 the vendored `Abba.get_java_dependencies()`. The preflight resolves the actual
 Java classes used by the vendor for ABBA startup, state loading, moving-source

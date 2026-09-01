@@ -273,6 +273,7 @@ echo.
 set "CURRENT_STAGE=Native ABBA Nissl rendering"
 echo [24B/30] Importing final manually registered WHS/Nissl Ch03...
 if /I not "%WITH_NISSL%"=="NO" powershell -NoProfile -ExecutionPolicy Bypass -File "src\bootstrap_native_java.ps1" || goto fail
+if /I not "%WITH_NISSL%"=="NO" powershell -NoProfile -ExecutionPolicy Bypass -File "src\bootstrap_native_maven.ps1" || goto fail
 if /I "%WITH_NISSL%"=="NO" (
     echo Explicit --without-nissl requested. Building legacy label-only atlas.
 ) else (
