@@ -86,6 +86,38 @@ class RegisteredStackTests(unittest.TestCase):
                     setattr(pipeline, name, value)
 
 
+class MultiAtlasTransactionTests(unittest.TestCase):
+    def test_later_target_failure_restores_every_earlier_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlases = [root / "atlas_a", root / "atlas_b"]
+            for atlas in atlases:
+                atlas.mkdir()
+                (atlas / "metadata.json").write_text("original", encoding="utf-8")
+                (atlas / "annotation.tiff").touch()
+                (atlas / "annotation.nii.gz").touch()
+            calls = 0
+            def activate(atlas, active, report):
+                nonlocal calls
+                calls += 1
+                (atlas / "metadata.json").write_text("changed", encoding="utf-8")
+                (atlas / "waxholm_anatomy_reference.tiff").write_text("partial", encoding="utf-8")
+                if calls == 2:
+                    raise OSError("second atlas activation failed")
+                return {"atlas": str(atlas)}
+            provenance = {"renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+                          "visual_parity_status": "pending"}
+            with mock.patch.object(pipeline, "atlas_candidates", return_value=atlases), \
+                    mock.patch.object(pipeline.tifffile, "imread", return_value=np.zeros((1,), dtype=np.uint16)), \
+                    mock.patch.object(pipeline, "_transactional_atlas_install", side_effect=activate), \
+                    mock.patch.object(pipeline, "REPORT_DIR", root / "reports"):
+                with self.assertRaisesRegex(OSError, "second atlas"):
+                    pipeline.install_channel(provenance)
+            for atlas in atlases:
+                self.assertEqual((atlas / "metadata.json").read_text(encoding="utf-8"), "original")
+                self.assertFalse((atlas / "waxholm_anatomy_reference.tiff").exists())
+
+
 class WaxholmSourceTests(unittest.TestCase):
     def manifest(self):
         return {
@@ -419,6 +451,18 @@ class NativeRuntimePolicyTests(unittest.TestCase):
             self.assertTrue(all(str(Path(temporary)) in value for key, value in env.items() if key != "BRAINGLOBE_DIR"))
 
 
+class NativeDependencyParityTests(unittest.TestCase):
+    def test_runtime_coordinates_equal_vendored_get_java_dependencies(self):
+        import ast
+        from src import native_abba_runtime as runtime
+        tree = ast.parse((runtime.VENDOR / "abba.py").read_text(encoding="utf-8"))
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_java_dependencies")
+        returned = next(node.value for node in ast.walk(function) if isinstance(node, ast.Return))
+        vendor_dependencies = ast.literal_eval(returned)
+        self.assertEqual(list(runtime.JAVA_DEPENDENCIES), vendor_dependencies)
+        self.assertIn("ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand", runtime.REQUIRED_JAVA_CLASSES)
+
+
 class NativeRuntimeInitializationTests(unittest.TestCase):
     def test_missing_builder_java_is_classified(self):
         from src.native_abba_runtime import NativeRuntimeError, RuntimePaths, validate_java
@@ -433,6 +477,9 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
             executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
             executable.parent.mkdir(parents=True)
             executable.touch()
+            (paths.java / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "17.0.14+7"}), encoding="utf-8"
+            )
             fake_imagej = mock.Mock()
             fake_ij = mock.Mock()
             fake_imagej.init.return_value = fake_ij
@@ -443,12 +490,38 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
                 if name == "imagej": return fake_imagej
                 if name == "scyjava": return fake_scyjava
                 return real_import(name)
+            java_version = mock.Mock(returncode=0, stdout="", stderr='openjdk version "17.0.14"')
             with mock.patch.object(runtime, "install_vendor_package"), \
-                    mock.patch.object(runtime.importlib, "import_module", side_effect=imported):
+                    mock.patch.object(runtime.importlib, "import_module", side_effect=imported), \
+                    mock.patch.object(runtime.subprocess, "run", return_value=java_version):
                 ij, classes = runtime.initialize_native_api(paths)
             self.assertIs(ij, fake_ij)
             fake_imagej.init.assert_called_once_with(list(runtime.JAVA_DEPENDENCIES), mode="headless")
             self.assertEqual(set(classes), set(runtime.REQUIRED_JAVA_CLASSES))
+
+    def test_corrupt_java_marker_is_classified(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (paths.java / "runtime-manifest.json").write_text("not json", encoding="utf-8")
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "JAVA_CACHE_CORRUPT"):
+                runtime.validate_java(paths)
+
+    def test_wrong_java_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (paths.java / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "21.0.1+12"}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "JAVA_VERSION"):
+                runtime.validate_java(paths)
 
     def test_wrong_state_runtime_version_is_rejected(self):
         from src import native_abba_runtime as runtime

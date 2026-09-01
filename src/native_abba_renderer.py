@@ -141,22 +141,86 @@ def _find_source_and_converters(module) -> list:
     return found
 
 
+
+def _find_multipositioner(module, fallback):
+    """Use the MultiSlicePositioner returned by native ZIP import, if exposed."""
+    candidates = list(module.getOutputs().values())
+    for value in candidates:
+        pending = [value]
+        while pending:
+            item = pending.pop(0)
+            if item is None:
+                continue
+            if hasattr(item, "getSlices") and hasattr(item, "selectSlice"):
+                return item
+            if isinstance(item, (str, bytes)):
+                continue
+            try:
+                pending.extend(list(item))
+            except (TypeError, AttributeError):
+                pass
+    # Some ABBA builds mutate the currently opened positioner and expose only
+    # a success output. Accept that only when it really contains all slices.
+    if fallback is not None and int(fallback.getSlices().size()) == 588:
+        return fallback
+    keys = [str(key) for key in module.getOutputs().keySet()]
+    raise NisslBuildError("NATIVE_STATE_LOAD", f"ZIP import returned no MultiSlicePositioner; outputs={keys}")
+
 def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
-    rai = sac.getSpimSource().getSource(0, 0)
+    """Place the native BDV raster on the explicit zero-origin Paxinos grid."""
+    source = sac.getSpimSource()
+    rai = source.getSource(0, 0)
     converted = ij.py.from_java(rai)
     array = np.asarray(converted)
     if array.ndim != 3:
         raise NisslBuildError("NATIVE_EXPORT_SHAPE", f"native BDV source is not 3-D: {array.shape}")
-    permutations = {
-        TARGET_SHAPE: (0, 1, 2),
-        (409, 286, 608): (2, 1, 0),
-        (409, 608, 286): (1, 2, 0),
-        (286, 409, 608): (2, 0, 1),
-    }
-    key = tuple(int(item) for item in array.shape)
-    if key not in permutations:
-        raise NisslBuildError("NATIVE_EXPORT_SHAPE", f"cannot orient native BDV shape {key} to {TARGET_SHAPE}")
-    return np.transpose(array, permutations[key])
+    dimensions_xyz = tuple(int(rai.dimension(axis)) for axis in range(3))
+    if tuple(array.shape) == dimensions_xyz[::-1]:
+        source_ap_si_lr = array
+    elif tuple(array.shape) == dimensions_xyz:
+        source_ap_si_lr = array.transpose(2, 1, 0)
+    else:
+        raise NisslBuildError(
+            "NATIVE_EXPORT_AXES",
+            f"PyImageJ shape {array.shape} disagrees with BDV XYZ dimensions {dimensions_xyz}",
+        )
+
+    from scyjava import jimport
+    transform = jimport("net.imglib2.realtransform.AffineTransform3D")()
+    source.getSourceTransform(0, 0, transform)
+    matrix = np.array([[float(transform.get(row, column)) for column in range(4)] for row in range(3)])
+    expected_scale_mm = 0.04
+    linear = matrix[:, :3]
+    if not np.allclose(linear, np.diag([expected_scale_mm] * 3), rtol=0, atol=1e-9):
+        raise NisslBuildError(
+            "NATIVE_EXPORT_GRID",
+            f"native output must have axis-aligned 0.04-mm XYZ transform, got {matrix.tolist()}",
+        )
+    starts_xyz_float = matrix[:, 3] / expected_scale_mm
+    starts_xyz = np.rint(starts_xyz_float).astype(int)
+    if not np.allclose(starts_xyz_float, starts_xyz, rtol=0, atol=1e-6):
+        raise NisslBuildError(
+            "NATIVE_EXPORT_ORIGIN",
+            f"native output origin is not on the 40-um target grid: {matrix[:, 3].tolist()}",
+        )
+    starts = (int(starts_xyz[2]), int(starts_xyz[1]), int(starts_xyz[0]))  # AP, SI, LR
+    target = np.zeros(TARGET_SHAPE, dtype=source_ap_si_lr.dtype)
+    source_slices = []
+    target_slices = []
+    for start_index, source_size, target_size in zip(starts, source_ap_si_lr.shape, TARGET_SHAPE):
+        target_begin = max(0, start_index)
+        target_end = min(target_size, start_index + source_size)
+        if target_end <= target_begin:
+            raise NisslBuildError(
+                "NATIVE_EXPORT_BOUNDS",
+                f"native source {source_ap_si_lr.shape} at AP/SI/LR origin {starts} misses {TARGET_SHAPE}",
+            )
+        source_begin = target_begin - start_index
+        source_end = source_begin + (target_end - target_begin)
+        source_slices.append(slice(source_begin, source_end))
+        target_slices.append(slice(target_begin, target_end))
+    target[tuple(target_slices)] = source_ap_si_lr[tuple(source_slices)]
+    return target
 
 
 def _atlas_name() -> str:
@@ -168,6 +232,39 @@ def _atlas_name() -> str:
     raise NisslBuildError("FIXED_SOURCE", "built Paxinos atlas metadata was not found")
 
 
+
+class _AbbaAtlasView:
+    """Expose the already AP/SI/LR arrays in ABBA's required ASR convention."""
+    def __init__(self, atlas):
+        self._atlas = atlas
+        self.orientation = "asr"
+        self.metadata = dict(atlas.metadata)
+        self.metadata["orientation"] = "asr"
+
+    def __getattr__(self, name):
+        return getattr(self._atlas, name)
+
+
+def _open_fixed_abba(ij, atlas_name: str):
+    """Create the fixed BrainGlobe atlas using the exact vendored adapter."""
+    from brainglobe_atlasapi import BrainGlobeAtlas
+    from abba_python import Abba
+    from abba_python.abba_atlas import AbbaAtlas
+    bg_atlas = BrainGlobeAtlas(atlas_name)
+    original_orientation = str(bg_atlas.orientation).lower()
+    shape = tuple(int(value) for value in bg_atlas.annotation.shape)
+    if shape != TARGET_SHAPE:
+        raise NisslBuildError("FIXED_SOURCE", f"Paxinos annotation must be AP/SI/LR {TARGET_SHAPE}, got {shape}")
+    runtime_view = _AbbaAtlasView(bg_atlas)
+    fixed_atlas = AbbaAtlas(runtime_view, ij)
+    fixed_atlas.initialize(None, None)
+    Abba.opened_atlases[atlas_name] = fixed_atlas
+    abba = Abba(atlas_name=atlas_name, ij=ij, x_axis="RL", y_axis="SI", z_axis="AP",
+                headless=True, print_config=False, log_level="INFO")
+    return abba, {"atlas_name": atlas_name, "shape_ap_si_lr": list(shape),
+                  "installed_orientation": original_orientation,
+                  "native_abba_orientation": "asr", "array_permutation_applied": False}
+
 def render_native(package_path: str) -> dict:
     package = Path(package_path).resolve()
     manifest = pipeline.load_package_manifest(package)
@@ -178,18 +275,21 @@ def render_native(package_path: str) -> dict:
     labels = pipeline.orient_annotation(tifffile.imread(annotation_path), annotation_path)
     target_ap, duplicate_ap = pipeline.registered_target_ap_mapping(labels)
     paths = runtime.RuntimePaths()
+    paths.create()
     work = Path(tempfile.mkdtemp(prefix="native-render-", dir=paths.temporary))
     try:
         planes = _single_plane_tiffs(source_path, work / "moving_sources")
         rebound_path = paths.reports / "rebound_state.abba"
         binding = build_rebound_state(state_path, planes, rebound_path)
         ij, _ = runtime.initialize_native_api(paths)
-        from abba_python import Abba
-        abba = Abba(atlas_name=_atlas_name(), ij=ij, x_axis="RL", y_axis="SI", z_axis="AP",
-                    headless=True, print_config=False, log_level="INFO")
-        loaded = abba.state_load(_java_file(rebound_path))
-        if not bool(loaded) or int(abba.get_n_slices()) != 588:
-            raise NisslBuildError("NATIVE_STATE_LOAD", f"success={loaded}, slices={abba.get_n_slices()}")
+        abba, fixed_source_report = _open_fixed_abba(ij, _atlas_name())
+        # `.abba` is a standard ZIP state. The vendored API provides a
+        # dedicated native importer for it; ABBAStateLoadCommand is for the
+        # unpacked registration-state file and must not receive a ZIP.
+        imported = abba.import_std_zip_state(_java_file(rebound_path))
+        abba.mp = _find_multipositioner(imported, abba.mp)
+        if int(abba.get_n_slices()) != 588:
+            raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {abba.get_n_slices()}")
         abba.select_all_slices()
         module = abba.export_resampled_slices_to_bdv_source(
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
@@ -211,7 +311,7 @@ def render_native(package_path: str) -> dict:
         report = {
             "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
             "visual_parity_status": "pending", "release_eligible": False,
-            "source": source_report, "source_binding": binding,
+            "source": source_report, "source_binding": binding, "fixed_source": fixed_source_report,
             "abba_state_sha256": runtime.STATE_SHA256, "abba_version": runtime.ABBA_VERSION,
             "source_count": 588, "slice_state_count": 588, "mapped_plane_count": 588,
             "transform_types": runtime.inspect_state(state_path)["action_types"],
@@ -247,7 +347,18 @@ def main(argv: Iterable[str] | None = None) -> int:
               "visual_parity_status", "release_eligible")}, indent=2))
         return 0
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        code = getattr(exc, "code", "NATIVE_ABBA_RENDER")
+        try:
+            pipeline.write_report({
+                "native_failure": {"error_code": str(code), "message": str(exc),
+                                   "renderer_backend": "native_abba_0.11",
+                                   "native_backend_verified": False,
+                                   "visual_parity_status": "not_applicable",
+                                   "release_eligible": False}
+            })
+        except Exception as report_exc:
+            print(f"WARNING: could not write native failure report: {report_exc}", file=sys.stderr)
+        print(f"ERROR [{code}]: {exc}", file=sys.stderr)
         return 2
 
 

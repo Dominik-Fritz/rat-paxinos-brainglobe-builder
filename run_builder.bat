@@ -289,6 +289,8 @@ if /I "%WITH_NISSL%"=="NO" (
     )
     echo Nissl package: !NISSL_PACKAGE!
     "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!" || goto fail
+    echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
+    set "BUILD_WARNINGS=YES"
 )
 
 call :phase "6/6" "ABBA integration and final report"

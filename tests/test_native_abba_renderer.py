@@ -51,3 +51,61 @@ class NativeOutputTests(unittest.TestCase):
         batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
         self.assertIn('src\\native_abba_renderer.py', batch)
         self.assertNotIn('ch03_nissl_pipeline.py" build-from-package', batch)
+        self.assertIn("VISUAL_VALIDATION_PENDING", batch)
+        self.assertIn('set "BUILD_WARNINGS=YES"', batch)
+
+
+class NativeZipImportTests(unittest.TestCase):
+    def test_multipositioner_is_discovered_by_api_shape(self):
+        positioner = mock.Mock()
+        positioner.getSlices = mock.Mock()
+        positioner.selectSlice = mock.Mock()
+        outputs = mock.Mock()
+        outputs.values.return_value = [{"nested": "ignored"}, [positioner]]
+        module = mock.Mock()
+        module.getOutputs.return_value = outputs
+        self.assertIs(renderer._find_multipositioner(module, None), positioner)
+
+    def test_renderer_uses_vendored_standard_zip_import_not_json_state_load(self):
+        source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(encoding="utf-8")
+        self.assertIn("abba.import_std_zip_state", source)
+        self.assertNotIn("abba.state_load(", source)
+
+
+class NativeGridPlacementTests(unittest.TestCase):
+    def test_bdv_transform_places_smaller_native_raster_on_target_grid(self):
+        import sys
+        import types
+        import numpy as np
+        class Transform:
+            values = [[0.04, 0.0, 0.0, 0.04], [0.0, 0.04, 0.0, 0.0], [0.0, 0.0, 0.04, 0.0]]
+            def get(self, row, column): return self.values[row][column]
+        fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
+        rai = mock.Mock()
+        rai.dimension.side_effect = [3, 2, 2]
+        source = mock.Mock()
+        source.getSource.return_value = rai
+        source.getSourceTransform.side_effect = lambda time, level, transform: None
+        sac = mock.Mock()
+        sac.getSpimSource.return_value = source
+        ij = mock.Mock()
+        payload = np.arange(12, dtype=np.uint16).reshape(2, 2, 3)
+        ij.py.from_java.return_value = payload
+        with mock.patch.dict(sys.modules, {"scyjava": fake_scyjava}):
+            result = renderer._source_to_ap_si_lr(ij, sac)
+        self.assertEqual(result.shape, renderer.TARGET_SHAPE)
+        np.testing.assert_array_equal(result[0:2, 0:2, 1:4], payload)
+        self.assertEqual(int(result[:, :, 0].sum()), 0)
+
+
+class FixedAtlasViewTests(unittest.TestCase):
+    def test_runtime_view_exposes_ap_si_lr_arrays_as_asr_without_permutation(self):
+        atlas = mock.Mock()
+        atlas.orientation = "pil"
+        atlas.metadata = {"orientation": "pil", "resolution": [40, 40, 40]}
+        atlas.annotation = object()
+        view = renderer._AbbaAtlasView(atlas)
+        self.assertEqual(view.orientation, "asr")
+        self.assertEqual(view.metadata["orientation"], "asr")
+        self.assertIs(view.annotation, atlas.annotation)
+        self.assertEqual(atlas.metadata["orientation"], "pil")

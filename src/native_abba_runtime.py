@@ -11,6 +11,7 @@ import importlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -36,11 +37,20 @@ JAVA_DEPENDENCIES = (
     "ch.epfl.biop:atlas:0.3.2",
     "org.scijava:scijava-ui-swing:1.0.3",
     "net.imglib2:imglib2:7.1.4",
+    "org.janelia.saalfeldlab:n5:3.5.1",
+    "org.janelia.saalfeldlab:n5-blosc:1.1.1",
+    "org.janelia.saalfeldlab:n5-ij:4.4.1",
+    "org.janelia.saalfeldlab:n5-aws-s3:4.3.0",
+    "org.janelia.saalfeldlab:n5-google-cloud:5.1.0",
+    "org.janelia.saalfeldlab:n5-viewer_fiji:6.1.2",
+    "org.janelia.saalfeldlab:n5-zarr:1.5.1",
+    "org.janelia.saalfeldlab:n5-universe:2.3.0",
 )
 REQUIRED_JAVA_CLASSES = (
     "ch.epfl.biop.atlas.aligner.command.ABBAStartCommand",
     "ch.epfl.biop.atlas.aligner.command.ABBAStateLoadCommand",
     "ch.epfl.biop.atlas.aligner.command.ImportSliceFromSourcesCommand",
+    "ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand",
     "ch.epfl.biop.atlas.aligner.command.ExportResampledSlicesToBDVSourceCommand",
     "ch.epfl.biop.atlas.struct.Atlas",
     "sc.fiji.bdvpg.sourceandconverter.SourceAndConverterHelper",
@@ -166,6 +176,28 @@ def validate_java(paths: RuntimePaths) -> Path:
             "JAVA_COMPONENT_MISSING",
             f"builder-local Java is missing: {executable}; runtime bootstrap must populate it",
         )
+    marker = paths.java / "runtime-manifest.json"
+    if not marker.is_file():
+        raise NativeRuntimeError("JAVA_CACHE_CORRUPT", f"runtime marker is missing: {marker}")
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise NativeRuntimeError("JAVA_CACHE_CORRUPT", f"invalid runtime marker: {exc}") from exc
+    if manifest.get("pinned_version") != "17.0.14+7":
+        raise NativeRuntimeError(
+            "JAVA_VERSION", f"expected 17.0.14+7, marker reports {manifest.get('pinned_version')!r}"
+        )
+    try:
+        completed = subprocess.run(
+            [str(executable), "-version"], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise NativeRuntimeError("JAVA_CACHE_CORRUPT", f"builder-local java cannot execute: {exc}") from exc
+    version_output = (completed.stdout + completed.stderr).strip()
+    if completed.returncode != 0:
+        raise NativeRuntimeError("JAVA_CACHE_CORRUPT", f"java -version failed: {version_output}")
+    if '17.0.14' not in version_output:
+        raise NativeRuntimeError("JAVA_VERSION", f"expected Java 17.0.14, got: {version_output}")
     return executable
 
 

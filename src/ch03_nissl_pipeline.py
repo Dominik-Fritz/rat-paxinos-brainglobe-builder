@@ -410,15 +410,40 @@ def _transactional_atlas_install(atlas: Path, active: np.ndarray, import_report:
 def install_channel(import_report: dict) -> list[dict]:
     validate_install_provenance(import_report)
     active = tifffile.imread(ACTIVE_PATH)
+    eligible = [atlas for atlas in atlas_candidates() if all(
+        (atlas / name).is_file() for name in ("metadata.json", "annotation.tiff", "annotation.nii.gz")
+    )]
+    if not eligible:
+        close_memmap(active)
+        raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
+    # Keep a transaction-level snapshot as well as each target's local staging
+    # backup. If activation of a later atlas fails, earlier atlas targets must
+    # not retain a Ch03 result from this failed run.
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix="ch03-install-transaction-", dir=REPORT_DIR))
+    name = "waxholm_anatomy_reference"
+    snapshots: dict[Path, tuple[bool, Path]] = {}
     try:
-        installed = []
-        for atlas in atlas_candidates():
-            if all((atlas / name).is_file() for name in ("metadata.json", "annotation.tiff", "annotation.nii.gz")):
-                installed.append(_transactional_atlas_install(atlas, active, import_report))
-        if not installed:
-            raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
+        for index, atlas in enumerate(eligible):
+            snapshot_dir = transaction / str(index)
+            snapshot_dir.mkdir()
+            for destination in (atlas / f"{name}.tiff", atlas / f"{name}.nii.gz", atlas / "metadata.json"):
+                existed = destination.exists()
+                backup = snapshot_dir / destination.name
+                if existed:
+                    shutil.copy2(destination, backup)
+                snapshots[destination] = (existed, backup)
+        installed = [_transactional_atlas_install(atlas, active, import_report) for atlas in eligible]
+    except Exception:
+        for destination, (existed, backup) in snapshots.items():
+            if existed and backup.exists():
+                os.replace(backup, destination)
+            elif not existed:
+                destination.unlink(missing_ok=True)
+        raise
     finally:
         close_memmap(active)
+        shutil.rmtree(transaction, ignore_errors=True)
     write_report({"ch03_install": installed})
     print(f"  Installed targets: {len(installed)}")
     return installed
