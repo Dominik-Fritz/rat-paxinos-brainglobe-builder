@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -247,6 +248,26 @@ def write_preflight(paths: RuntimePaths, verify_api: bool) -> Path:
     return output
 
 
+
+def write_failure_report(paths: RuntimePaths, exc: NativeRuntimeError) -> Path:
+    """Persist preflight failures even when JVM initialization never completes."""
+    paths.create()
+    report = {
+        "renderer_backend": "native_abba_0.11",
+        "native_backend_verified": False,
+        "visual_parity_status": "not_applicable",
+        "release_eligible": False,
+        "error_code": exc.code,
+        "error_message": str(exc),
+        "exception_type": type(exc).__name__,
+        "traceback": traceback.format_exc(),
+        "cache_paths": paths.environment(),
+        "java_dependencies": list(JAVA_DEPENDENCIES),
+    }
+    output = paths.reports / "preflight_failure.json"
+    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return output
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--verify-api", action="store_true")
@@ -255,7 +276,9 @@ def main(argv=None) -> int:
         print(write_preflight(RuntimePaths(), args.verify_api))
         return 0
     except NativeRuntimeError as exc:
+        failure_report = write_failure_report(RuntimePaths(), exc)
         print(f"ERROR [{exc.code}]: {exc}", file=sys.stderr)
+        print(f"Failure report: {failure_report}", file=sys.stderr)
         return 2
 
 

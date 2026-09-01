@@ -523,6 +523,20 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
             with self.assertRaisesRegex(runtime.NativeRuntimeError, "JAVA_VERSION"):
                 runtime.validate_java(paths)
 
+    def test_native_preflight_failure_is_persisted(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            try:
+                raise runtime.NativeRuntimeError("NATIVE_API_INITIALIZATION", "maven resolution failed")
+            except runtime.NativeRuntimeError as exc:
+                report_path = runtime.write_failure_report(paths, exc)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["error_code"], "NATIVE_API_INITIALIZATION")
+            self.assertIn("maven resolution failed", report["error_message"])
+            self.assertIn("NativeRuntimeError", report["traceback"])
+            self.assertFalse(report["native_backend_verified"])
+
     def test_wrong_state_runtime_version_is_rejected(self):
         from src import native_abba_runtime as runtime
         with tempfile.TemporaryDirectory() as temporary:
