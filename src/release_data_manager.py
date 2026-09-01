@@ -124,6 +124,40 @@ def inspect_file(raw_dir: Path, key: str, spec: dict) -> dict:
     return row
 
 
+
+def local_cache_candidates(root: Path, filename: str) -> list[Path]:
+    """Return repository-local, immutable source caches before any network URL."""
+    return [
+        root / "data" / "external" / "bluebrain_headmodels_v1" / filename,
+        root / "data" / "release_assets" / "bluebrain_headmodels_v1" / filename,
+    ]
+
+
+def seed_from_local_cache(root: Path, raw_dir: Path, key: str, spec: dict) -> tuple[bool, str | None]:
+    """Hash-validate and atomically copy an existing builder-local source file."""
+    rejected: list[str] = []
+    for candidate in local_cache_candidates(root, spec["filename"]):
+        if not candidate.is_file():
+            continue
+        row = inspect_file(candidate.parent, key, spec)
+        if row["status"] != "ok":
+            rejected.append(f"{candidate}: {row['status']}")
+            continue
+        destination = raw_dir / spec["filename"]
+        temporary = destination.with_suffix(destination.suffix + ".local.partial")
+        safe_unlink(temporary)
+        try:
+            shutil.copy2(candidate, temporary)
+            copied = inspect_file(temporary.parent, key, {**spec, "filename": temporary.name})
+            if copied["status"] != "ok":
+                raise OSError(f"copied cache failed validation: {copied['status']}")
+            temporary.replace(destination)
+            return True, str(candidate)
+        except OSError as exc:
+            safe_unlink(temporary)
+            rejected.append(f"{candidate}: {exc}")
+    return False, "; ".join(rejected) if rejected else None
+
 def write_reports(root: Path, report: dict) -> None:
     report_dir = root / REPORT_SUBDIR
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -184,9 +218,16 @@ def run(root: Path, mode: str, include_optional: bool) -> int:
             if not needs:
                 downloads.append({"filename": spec["filename"], "action": "already_ok", "success": True, "error": None})
                 continue
+            seeded, local_detail = seed_from_local_cache(root, raw_dir, key, spec)
+            if seeded:
+                downloads.append({"filename": spec["filename"], "action": "copied_from_local_cache",
+                                  "success": True, "error": None, "source": local_detail})
+                continue
             url = file_url(spec["filename"])
             ok, err = download_file(url, raw_dir / spec["filename"])
-            downloads.append({"filename": spec["filename"], "action": "downloaded" if ok else "download_failed", "success": ok, "error": err, "url": url})
+            downloads.append({"filename": spec["filename"], "action": "downloaded" if ok else "download_failed",
+                              "success": ok, "error": err, "url": url,
+                              "local_cache_rejection": local_detail})
             if not ok:
                 message = f"Could not download {spec['filename']}: {err}"
                 if spec.get("required"):

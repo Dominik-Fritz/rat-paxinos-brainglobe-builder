@@ -29,3 +29,22 @@ class OptionalDownloadTests(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["errors"], [])
         self.assertRegex(report["warnings"][0], "optional; build continues")
+
+
+class LocalCacheTests(unittest.TestCase):
+    def test_repository_cache_is_verified_before_network(self):
+        repository = Path(__file__).parents[1]
+        source = repository / "data/external/bluebrain_headmodels_v1"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "data/external/bluebrain_headmodels_v1"
+            cache.mkdir(parents=True)
+            for spec in manager.FILES.values():
+                (cache / spec["filename"]).write_bytes((source / spec["filename"]).read_bytes())
+            with mock.patch.object(manager, "download_file", side_effect=AssertionError("network must not be used")):
+                result = manager.run(root, "ensure-minimal", include_optional=True)
+            self.assertEqual(result, 0)
+            report = (root / "reports/release_data_manager/release_data_manager_report.json").read_text(encoding="utf-8")
+            self.assertEqual(report.count('"action": "copied_from_local_cache"'), 3)
+            for key, spec in manager.FILES.items():
+                self.assertEqual(manager.inspect_file(root / "data/raw/bluebrainheadmodels", key, spec)["status"], "ok")
