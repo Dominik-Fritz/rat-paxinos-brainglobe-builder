@@ -42,14 +42,19 @@ foreach ($CandidateApi in @($VersionApi, $FeatureApi)) {
 if ($null -eq $Assets) {
     throw "JAVA_NETWORK: all Adoptium metadata requests failed: $($MetadataErrors -join ' | ')"
 }
+# The API request already constrains OS, architecture, image type and JVM.
+# Some Adoptium responses omit binary.jvm_impl even though jvm_impl=hotspot was
+# applied by the server. Select the pinned release first, then validate only
+# fields which are guaranteed to be present in the binary object.
 $Asset = $Assets | Where-Object {
-    ($_.release_name -eq $PinnedRelease -or $_.version_data.semver -eq $PinnedVersion) -and
-    $_.binary.os -eq "windows" -and $_.binary.architecture -eq "x64" -and
-    $_.binary.image_type -eq "jdk" -and $_.binary.jvm_impl -eq "hotspot"
+    $_.release_name -eq $PinnedRelease -or $_.version_data.semver -eq $PinnedVersion
 } | Select-Object -First 1
 if ($null -eq $Asset) {
     $Available = ($Assets | ForEach-Object { $_.release_name } | Where-Object { $_ } | Select-Object -First 10) -join ", "
     throw "JAVA_VERSION: pinned Adoptium JDK $PinnedRelease was not returned; available: $Available"
+}
+if ($Asset.binary.os -ne "windows" -or $Asset.binary.architecture -ne "x64" -or $Asset.binary.image_type -ne "jdk") {
+    throw "JAVA_PLATFORM: pinned release has unexpected binary metadata: os=$($Asset.binary.os), architecture=$($Asset.binary.architecture), image_type=$($Asset.binary.image_type)"
 }
 $Package = $Asset.binary.package
 if ([string]::IsNullOrWhiteSpace($Package.checksum) -or [string]::IsNullOrWhiteSpace($Package.link)) {
