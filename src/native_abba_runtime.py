@@ -58,6 +58,10 @@ REQUIRED_JAVA_CLASSES = (
     "sc.fiji.bdvpg.sourceandconverter.SourceAndConverterHelper",
     "net.imglib2.realtransform.ThinplateSplineTransform",
 )
+JGO_REPOSITORIES = {
+    "scijava.public": "https://maven.scijava.org/content/groups/public",
+    "ome.releases": "https://artifacts.openmicroscopy.org/artifactory/maven/",
+}
 
 
 class NativeRuntimeError(RuntimeError):
@@ -114,6 +118,10 @@ class RuntimePaths:
             "TMP": str(self.temporary),
             "TEMP": str(self.temporary),
             "BRAINGLOBE_DIR": str(self.brainglobe),
+            # jgo 1.0.6 reads ~/.jgo.rc; keep that file and every related
+            # resolver input inside the builder rather than the Windows user profile.
+            "HOME": str(self.maven_user_home),
+            "USERPROFILE": str(self.maven_user_home),
         }
 
     def activate(self) -> dict[str, str]:
@@ -248,6 +256,19 @@ def validate_maven(paths: RuntimePaths) -> Path:
         raise NativeRuntimeError("MAVEN_VERSION", f"expected Apache Maven 3.9.9, got: {output}")
     return executable
 
+
+def configure_jgo(paths: RuntimePaths) -> Path:
+    """Write the isolated legacy-jgo repository configuration used by ABBA 0.11."""
+    paths.create()
+    config = paths.maven_user_home / ".jgo.rc"
+    lines = ["[repositories]"]
+    lines.extend(f"{name} = {url}" for name, url in JGO_REPOSITORIES.items())
+    expected = "\n".join(lines) + "\n"
+    if config.exists() and config.read_text(encoding="utf-8") != expected:
+        raise NativeRuntimeError("JGO_CACHE_CORRUPT", f"unexpected builder-local repository config: {config}")
+    config.write_text(expected, encoding="utf-8")
+    return config
+
 def install_vendor_package() -> Path:
     """Expose the direct vendor directory under its original package name."""
     target = ROOT / "data/native_abba_runtime/python/abba_python"
@@ -302,6 +323,7 @@ def initialize_native_api(paths: RuntimePaths | None = None):
     paths.activate()
     validate_java(paths)
     validate_maven(paths)
+    configure_jgo(paths)
     install_vendor_package()
     validate_python_bridge()
     try:

@@ -450,6 +450,20 @@ class NativeRuntimePolicyTests(unittest.TestCase):
             env = paths.environment()
             self.assertTrue(all(str(Path(temporary)) in value for key, value in env.items() if key != "BRAINGLOBE_DIR"))
 
+    def test_jgo_repositories_are_explicit_and_builder_local(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            config = runtime.configure_jgo(paths)
+            text = config.read_text(encoding="utf-8")
+            self.assertEqual(config.parent, paths.maven_user_home)
+            self.assertIn("[repositories]", text)
+            self.assertIn("maven.scijava.org", text)
+            self.assertIn("artifacts.openmicroscopy.org", text)
+            env = paths.environment()
+            self.assertEqual(env["HOME"], str(paths.maven_user_home))
+            self.assertEqual(env["USERPROFILE"], str(paths.maven_user_home))
+
 
 class NativeDependencyParityTests(unittest.TestCase):
     def test_runtime_coordinates_equal_vendored_get_java_dependencies(self):

@@ -19,6 +19,14 @@ to `data/native_abba_runtime`. Neither `PATH` nor the user's `.m2` directory is
 used as a fallback. Missing, corrupt, and wrong-version Maven runtimes are
 reported separately.
 
+Legacy jgo also reads repository definitions from `~/.jgo.rc`. The runtime
+redirects both `HOME` and `USERPROFILE` to its builder-local user directory and
+writes an explicit repository list there. Besides SciJava Public this includes
+the Open Microscopy Environment repository required by the pinned Bio-Formats
+and OMERO transitive dependencies. The Maven bootstrap itself sets
+`JAVA_HOME` to the builder-local Temurin runtime before executing `mvn.cmd`, so
+an older globally installed Java cannot be selected.
+
 ABBA 0.11.0 initializes PyImageJ with the exact Maven coordinates recorded by
 the vendored `Abba.get_java_dependencies()`. The preflight resolves the actual
 Java classes used by the vendor for ABBA startup, state loading, moving-source

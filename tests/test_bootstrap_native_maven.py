@@ -30,6 +30,10 @@ class NativeMavenBootstrapTests(unittest.TestCase):
         self.assertNotIn("$Home =", self.script)
         self.assertIn("$MavenHome =", self.script)
 
+    def test_maven_is_forced_to_use_builder_local_java(self):
+        self.assertIn('$env:JAVA_HOME = $JavaHome', self.script)
+        self.assertIn('MAVEN_JAVA_MISSING', self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

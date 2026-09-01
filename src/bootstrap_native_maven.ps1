@@ -8,6 +8,14 @@ $Marker = Join-Path $MavenRoot "runtime-manifest.json"
 $BaseUrl = "https://archive.apache.org/dist/maven/maven-3/$Version/binaries/apache-maven-$Version-bin.zip"
 $Archive = Join-Path $Runtime "downloads\apache-maven-$Version-bin.zip"
 $ChecksumFile = "$Archive.sha512"
+$JavaHome = Join-Path $Runtime "java"
+$JavaExe = Join-Path $JavaHome "bin\java.exe"
+
+if (-not (Test-Path $JavaExe)) {
+    throw "MAVEN_JAVA_MISSING: builder-local Java must be bootstrapped before Maven: $JavaExe"
+}
+$env:JAVA_HOME = $JavaHome
+$env:Path = "$(Join-Path $JavaHome 'bin');$env:Path"
 
 if (Test-Path $Marker) {
     $Existing = Get-Content $Marker -Raw | ConvertFrom-Json
