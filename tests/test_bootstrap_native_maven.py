@@ -25,6 +25,11 @@ class NativeMavenBootstrapTests(unittest.TestCase):
         self.assertIn('runtime-manifest.json', self.script)
         self.assertNotIn("Program Files", self.script)
 
+    def test_does_not_overwrite_powershell_home_automatic_variable(self):
+        # PowerShell variable names are case-insensitive and $HOME is read-only.
+        self.assertNotIn("$Home =", self.script)
+        self.assertIn("$MavenHome =", self.script)
+
 
 if __name__ == "__main__":
     unittest.main()

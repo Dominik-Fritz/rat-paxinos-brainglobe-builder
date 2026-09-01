@@ -3,7 +3,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Runtime = Join-Path $Root "data\native_abba_runtime"
 $MavenRoot = Join-Path $Runtime "maven"
 $Version = "3.9.9"
-$Home = Join-Path $MavenRoot "apache-maven-$Version"
+$MavenHome = Join-Path $MavenRoot "apache-maven-$Version"
 $Marker = Join-Path $MavenRoot "runtime-manifest.json"
 $BaseUrl = "https://archive.apache.org/dist/maven/maven-3/$Version/binaries/apache-maven-$Version-bin.zip"
 $Archive = Join-Path $Runtime "downloads\apache-maven-$Version-bin.zip"
@@ -11,9 +11,9 @@ $ChecksumFile = "$Archive.sha512"
 
 if (Test-Path $Marker) {
     $Existing = Get-Content $Marker -Raw | ConvertFrom-Json
-    if ($Existing.pinned_version -eq $Version -and (Test-Path (Join-Path $Home "bin\mvn.cmd"))) {
+    if ($Existing.pinned_version -eq $Version -and (Test-Path (Join-Path $MavenHome "bin\mvn.cmd"))) {
         Write-Host "Builder-local Apache Maven $Version is ready."
-        & (Join-Path $Home "bin\mvn.cmd") --version
+        & (Join-Path $MavenHome "bin\mvn.cmd") --version
         exit $LASTEXITCODE
     }
     throw "MAVEN_CACHE_CORRUPT: runtime marker/version does not match $Version"
@@ -45,8 +45,8 @@ $Extracted = Join-Path $Stage "apache-maven-$Version"
 if (-not (Test-Path (Join-Path $Extracted "bin\mvn.cmd"))) {
     throw "MAVEN_COMPONENT_MISSING: extracted archive has no bin\mvn.cmd"
 }
-Remove-Item $Home -Recurse -Force -ErrorAction SilentlyContinue
-Move-Item $Extracted $Home
+Remove-Item $MavenHome -Recurse -Force -ErrorAction SilentlyContinue
+Move-Item $Extracted $MavenHome
 Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue
 $ArchiveSha256 = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
 @{
@@ -57,5 +57,5 @@ $ArchiveSha256 = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant
     archive_sha256 = $ArchiveSha256
     installed_utc = [DateTime]::UtcNow.ToString("o")
 } | ConvertTo-Json | Set-Content -Encoding UTF8 $Marker
-& (Join-Path $Home "bin\mvn.cmd") --version
+& (Join-Path $MavenHome "bin\mvn.cmd") --version
 if ($LASTEXITCODE -ne 0) { throw "MAVEN_CACHE_CORRUPT: mvn --version failed with $LASTEXITCODE" }
