@@ -19,7 +19,16 @@ class JavaBootstrapScriptTests(unittest.TestCase):
 
     def test_release_selection_does_not_require_optional_jvm_impl_response_field(self):
         script = (Path(__file__).parents[1] / "src/bootstrap_native_java.ps1").read_text(encoding="utf-8")
-        selection = script.split("$Asset = $Assets | Where-Object", 1)[1].split("if ($null -eq $Asset)", 1)[0]
+        selection = script.split("$Asset = $NormalizedAssets | Where-Object", 1)[1].split("if ($null -eq $Asset)", 1)[0]
         self.assertNotIn("binary.jvm_impl", selection)
         self.assertIn("release_name -eq $PinnedRelease", selection)
         self.assertIn('JAVA_PLATFORM', script)
+
+    def test_both_adoptium_binary_response_shapes_are_normalized(self):
+        script = (Path(__file__).parents[1] / "src/bootstrap_native_java.ps1").read_text(encoding="utf-8")
+        self.assertIn("$Item.binary", script)
+        self.assertIn("$Item.binaries", script)
+        self.assertIn("$NormalizedAssets", script)
+        normalization = script.split("$NormalizedAssets = @()", 1)[1].split("$Asset = $NormalizedAssets", 1)[0]
+        self.assertIn("binary = $Binary", normalization)
+        self.assertIn("no binary entries", normalization)

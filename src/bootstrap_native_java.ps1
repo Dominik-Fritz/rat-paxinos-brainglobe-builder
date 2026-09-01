@@ -42,15 +42,32 @@ foreach ($CandidateApi in @($VersionApi, $FeatureApi)) {
 if ($null -eq $Assets) {
     throw "JAVA_NETWORK: all Adoptium metadata requests failed: $($MetadataErrors -join ' | ')"
 }
+# Adoptium uses two response shapes: assets/version can expose `binary`,
+# while feature_releases exposes a release object with a `binaries` array.
+# Normalize both before version/platform selection.
+$NormalizedAssets = @()
+foreach ($Item in $Assets) {
+    $Binaries = @()
+    if ($null -ne $Item.binary) { $Binaries = @($Item.binary) }
+    elseif ($null -ne $Item.binaries) { $Binaries = @($Item.binaries) }
+    foreach ($Binary in $Binaries) {
+        $NormalizedAssets += [PSCustomObject]@{
+            release_name = $Item.release_name
+            version_data = $Item.version_data
+            binary = $Binary
+        }
+    }
+}
+if ($NormalizedAssets.Count -eq 0) {
+    throw "JAVA_METADATA: Adoptium returned no binary entries in either supported response shape"
+}
 # The API request already constrains OS, architecture, image type and JVM.
-# Some Adoptium responses omit binary.jvm_impl even though jvm_impl=hotspot was
-# applied by the server. Select the pinned release first, then validate only
-# fields which are guaranteed to be present in the binary object.
-$Asset = $Assets | Where-Object {
+# Some responses omit binary.jvm_impl even though the server applied the filter.
+$Asset = $NormalizedAssets | Where-Object {
     $_.release_name -eq $PinnedRelease -or $_.version_data.semver -eq $PinnedVersion
 } | Select-Object -First 1
 if ($null -eq $Asset) {
-    $Available = ($Assets | ForEach-Object { $_.release_name } | Where-Object { $_ } | Select-Object -First 10) -join ", "
+    $Available = ($NormalizedAssets | ForEach-Object { $_.release_name } | Where-Object { $_ } | Select-Object -Unique -First 10) -join ", "
     throw "JAVA_VERSION: pinned Adoptium JDK $PinnedRelease was not returned; available: $Available"
 }
 if ($Asset.binary.os -ne "windows" -or $Asset.binary.architecture -ne "x64" -or $Asset.binary.image_type -ne "jdk") {
