@@ -86,9 +86,15 @@ kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
 may crop its export at a half-voxel origin, so the renderer uses the complete
 Java source transform to linearly resample that already natively transformed
-raster onto the explicit zero-origin 608×286×409 AP/SI/LR voxel centres. This
-grid conversion is plane-wise, uses constant-zero edges, and never rounds a
-fractional origin or reimplements the BigWarp TPS. The
+raster onto the 608×286×409 AP/SI/LR voxel centres.  The ABBA coronal world
+frame is centred in LR and SI (`-8.18`, `-5.72` mm at the first pixel edge),
+while AP retains the atlas origin. Treating LR/SI as zero-origin shifts and
+crops the registration and is forbidden. This grid conversion is plane-wise,
+uses constant-zero edges, and never rounds a fractional origin or reimplements
+the BigWarp TPS. Before export, native ABBA neighbour-matched slice thickness
+is enabled because the serialized 1-µm section thickness would otherwise leave
+empty planes on a 40-µm output grid. A post-export coverage check rejects any
+remaining empty registered AP plane rather than filling it synthetically. The
 fixed runtime atlas view exposes the already validated AP/SI/LR arrays to ABBA
 as `asr` without permuting or modifying the installed atlas data or metadata.
 

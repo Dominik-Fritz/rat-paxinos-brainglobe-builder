@@ -27,6 +27,16 @@ import native_abba_runtime as runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_SHAPE = (608, 286, 409)  # AP, SI, LR
+VOXEL_SIZE_MM = 0.04
+# ABBA's coronal slice coordinates are centred in LR and SI.  AP remains the
+# absolute atlas axis (the first non-empty Paxinos plane is AP 9).  Treating
+# the cropped BDV export as if all three target axes started at world zero
+# shifted the registered anatomy by half an atlas in-plane.
+TARGET_ORIGIN_XYZ_MM = (
+    -(TARGET_SHAPE[2] * VOXEL_SIZE_MM) / 2.0,
+    -(TARGET_SHAPE[1] * VOXEL_SIZE_MM) / 2.0,
+    0.0,
+)
 
 
 def classify_native_failure(exc: BaseException) -> NisslBuildError:
@@ -194,14 +204,20 @@ def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
     transform = jimport("net.imglib2.realtransform.AffineTransform3D")()
     source.getSourceTransform(0, 0, transform)
     matrix = np.array([[float(transform.get(row, column)) for column in range(4)] for row in range(3)])
-    expected_scale_mm = 0.04
+    expected_scale_mm = VOXEL_SIZE_MM
     linear = matrix[:, :3]
     if not np.allclose(linear, np.diag([expected_scale_mm] * 3), rtol=0, atol=1e-9):
         raise NisslBuildError(
             "NATIVE_EXPORT_GRID",
             f"native output must have axis-aligned 0.04-mm XYZ transform, got {matrix.tolist()}",
         )
-    starts_xyz = matrix[:, 3] / expected_scale_mm
+    target_origin_xyz = np.asarray(TARGET_ORIGIN_XYZ_MM, dtype=np.float64)
+    starts_xyz = (matrix[:, 3] - target_origin_xyz) / expected_scale_mm
+    # Decimal millimetre translations such as -8.14 cannot be represented
+    # exactly in binary. Snap only values already numerically equal to an
+    # integer voxel; preserve genuine half-voxel offsets for interpolation.
+    nearest = np.rint(starts_xyz)
+    starts_xyz = np.where(np.isclose(starts_xyz, nearest, rtol=0, atol=1e-9), nearest, starts_xyz)
     starts = starts_xyz[::-1]  # AP, SI, LR
     overlaps = [
         max(0.0, min(float(source_size - 1), float(target_size - 1 - start))) >=
@@ -214,8 +230,8 @@ def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
             f"native source {source_ap_si_lr.shape} at AP/SI/LR origin {starts.tolist()} misses {TARGET_SHAPE}",
         )
 
-    # target voxel i is at world 0.04*i; source voxel j is at
-    # world 0.04*j+translation, hence j=i-translation/0.04.  Render one AP
+    # Target voxel i is at its explicit atlas world origin + 0.04*i; source
+    # voxel j is at 0.04*j+translation.  Render one AP
     # plane at a time to keep peak memory bounded and make interpolation and
     # edge behaviour explicit.
     from scipy.ndimage import affine_transform
@@ -245,6 +261,18 @@ def _atlas_name() -> str:
             data = json.loads(metadata.read_text(encoding="utf-8"))
             return str(data.get("atlas_name") or data.get("name") or "paxinos_watson_rat_40um")
     raise NisslBuildError("FIXED_SOURCE", "built Paxinos atlas metadata was not found")
+
+
+def _validate_registered_coverage(volume: np.ndarray, target_ap: np.ndarray) -> None:
+    """Reject section-sized holes; never conceal them with synthetic filling."""
+    blank_registered = target_ap[~np.any(volume[target_ap] != 0, axis=(1, 2))]
+    if blank_registered.size:
+        preview = [int(value) for value in blank_registered[:20]]
+        raise NisslBuildError(
+            "NATIVE_EXPORT_GAPS",
+            f"native ABBA export contains {blank_registered.size} empty registered target planes; "
+            f"first AP indices: {preview}",
+        )
 
 
 
@@ -309,6 +337,12 @@ def render_native(package_path: str) -> dict:
         if int(abba.get_n_slices()) != 588:
             raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {abba.get_n_slices()}")
         abba.select_all_slices()
+        # The serialized sources are 1-um-thick 2-D planes separated by 40 um.
+        # A volumetric BDV export otherwise contains empty Z planes depending
+        # on grid phase.  This native ABBA command changes only display/export
+        # thickness so neighbouring registered sections meet; it does not
+        # alter any saved registration transform or landmark.
+        abba.set_slices_thickness_match_neighbors()
         module = abba.export_resampled_slices_to_bdv_source(
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
             downsample_x=1, downsample_y=1, downsample_z=1,
@@ -323,6 +357,7 @@ def render_native(package_path: str) -> dict:
         native_volume = _source_to_ap_si_lr(ij, sacs[0]).astype(np.uint16, copy=False)
         # Enforce the validated sequence edge policy without altering anatomy.
         native_volume[duplicate_ap] = native_volume[target_ap[0]]
+        _validate_registered_coverage(native_volume, target_ap)
         temporary = pipeline.ACTIVE_PATH.with_suffix(".tiff.partial")
         tifffile.imwrite(temporary, native_volume, bigtiff=True)
         pipeline.activate_validated_tiff(temporary, pipeline.ACTIVE_PATH)
@@ -335,6 +370,8 @@ def render_native(package_path: str) -> dict:
             "transform_types": runtime.inspect_state(state_path)["action_types"],
             "waxholm_ap_range": [189, 776], "ap_direction": "anterior-to-posterior",
             "target_shape_ap_si_lr": list(TARGET_SHAPE), "target_voxel_um": 40.0,
+            "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
+            "slice_thickness_policy": "native_match_neighbors_for_export",
             "actual_target_ap_indices": [int(value) for value in target_ap],
             "duplicated_anterior_target_ap": int(duplicate_ap),
             "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,

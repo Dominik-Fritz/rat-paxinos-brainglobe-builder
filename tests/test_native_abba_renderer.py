@@ -79,7 +79,9 @@ class NativeGridPlacementTests(unittest.TestCase):
         import types
         import numpy as np
         class Transform:
-            values = [[0.04, 0.0, 0.0, 0.04], [0.0, 0.04, 0.0, 0.0], [0.0, 0.0, 0.04, 0.0]]
+            values = [[0.04, 0.0, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[0] + 0.04],
+                      [0.0, 0.04, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[1]],
+                      [0.0, 0.0, 0.04, renderer.TARGET_ORIGIN_XYZ_MM[2]]]
             def get(self, row, column): return self.values[row][column]
         fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
         rai = mock.Mock()
@@ -103,7 +105,9 @@ class NativeGridPlacementTests(unittest.TestCase):
         import types
         import numpy as np
         class Transform:
-            values = [[0.04, 0.0, 0.0, -0.02], [0.0, 0.04, 0.0, 0.0], [0.0, 0.0, 0.04, 0.0]]
+            values = [[0.04, 0.0, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[0] - 0.02],
+                      [0.0, 0.04, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[1]],
+                      [0.0, 0.0, 0.04, renderer.TARGET_ORIGIN_XYZ_MM[2]]]
             def get(self, row, column): return self.values[row][column]
         fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
         rai = mock.Mock()
@@ -123,6 +127,24 @@ class NativeGridPlacementTests(unittest.TestCase):
         # Target LR=0 samples source LR=0.5: a true half-voxel interpolation.
         np.testing.assert_allclose(result[0:2, 0:2, 0], 5.0)
         np.testing.assert_allclose(result[0:2, 0:2, 1], 15.0)
+
+    def test_target_in_plane_world_origin_is_abba_centred(self):
+        self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (-8.18, -5.72, 0.0))
+
+    def test_empty_registered_planes_are_rejected_instead_of_filled(self):
+        import numpy as np
+        volume = np.ones((4, 2, 2), dtype=np.uint16)
+        volume[2] = 0
+        with self.assertRaisesRegex(Exception, r"NATIVE_EXPORT_GAPS.*AP indices: \[2\]"):
+            renderer._validate_registered_coverage(volume, np.array([1, 2, 3]))
+
+    def test_renderer_uses_native_neighbor_thickness_before_export(self):
+        source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(encoding="utf-8")
+        select_at = source.index("abba.select_all_slices()")
+        thickness_at = source.index("abba.set_slices_thickness_match_neighbors()")
+        export_at = source.index("abba.export_resampled_slices_to_bdv_source(")
+        self.assertLess(select_at, thickness_at)
+        self.assertLess(thickness_at, export_at)
 
 
 class FixedAtlasViewTests(unittest.TestCase):
