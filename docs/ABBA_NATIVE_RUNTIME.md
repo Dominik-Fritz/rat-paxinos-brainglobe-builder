@@ -27,6 +27,12 @@ and OMERO transitive dependencies. The Maven bootstrap itself sets
 `JAVA_HOME` to the builder-local Temurin runtime before executing `mvn.cmd`, so
 an older globally installed Java cannot be selected.
 
+Because legacy jgo does not consistently forward `.jgo.rc` repositories to its
+Windows Maven subprocess, the same repository allowlist is also written to a
+builder-local Maven `settings.xml`. `MAVEN_ARGS` forces every Maven 3.9 command
+to use that exact file. This is the authoritative fix for the Bio-Formats and
+OMERO artifacts that are not published in Maven Central.
+
 ABBA 0.11.0 initializes PyImageJ with the exact Maven coordinates recorded by
 the vendored `Abba.get_java_dependencies()`. The preflight resolves the actual
 Java classes used by the vendor for ABBA startup, state loading, moving-source

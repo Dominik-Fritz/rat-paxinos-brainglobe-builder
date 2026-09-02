@@ -464,6 +464,23 @@ class NativeRuntimePolicyTests(unittest.TestCase):
             self.assertEqual(env["HOME"], str(paths.maven_user_home))
             self.assertEqual(env["USERPROFILE"], str(paths.maven_user_home))
 
+    def test_maven_settings_force_ome_repository_for_jgo_subprocess(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            settings = runtime.configure_maven_settings(paths)
+            tree = runtime.ET.parse(settings)
+            namespace = {"m": "http://maven.apache.org/SETTINGS/1.2.0"}
+            repositories = {
+                item.find("m:id", namespace).text: item.find("m:url", namespace).text
+                for item in tree.findall(".//m:repository", namespace)
+            }
+            self.assertEqual(repositories, runtime.JGO_REPOSITORIES)
+            self.assertEqual(settings, paths.maven_settings)
+            self.assertIn(str(settings), paths.environment()["MAVEN_ARGS"])
+            active = tree.find(".//m:activeProfile", namespace)
+            self.assertEqual(active.text, "native-abba-repositories")
+
 
 class NativeDependencyParityTests(unittest.TestCase):
     def test_runtime_coordinates_equal_vendored_get_java_dependencies(self):

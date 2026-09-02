@@ -16,6 +16,7 @@ import subprocess
 import sys
 import traceback
 import zipfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,6 +88,8 @@ class RuntimePaths:
     @property
     def maven_user_home(self) -> Path: return self.root / "maven_user_home"
     @property
+    def maven_settings(self) -> Path: return self.maven_user_home / ".m2" / "settings.xml"
+    @property
     def imagej(self) -> Path: return self.root / "imagej"
     @property
     def downloads(self) -> Path: return self.root / "downloads"
@@ -113,6 +116,9 @@ class RuntimePaths:
                 f'-Duser.home="{self.maven_user_home}" '
                 f'-Dmaven.repo.local="{self.maven_repository}"'
             ),
+            # Maven 3.9 appends MAVEN_ARGS to every invocation, including the
+            # subprocess launched internally by legacy jgo.
+            "MAVEN_ARGS": f'-s "{self.maven_settings}"',
             "SCYJAVA_CONFIG_DIR": str(self.imagej),
             "CJDK_CACHE_DIR": str(self.java),
             "TMP": str(self.temporary),
@@ -269,6 +275,50 @@ def configure_jgo(paths: RuntimePaths) -> Path:
     config.write_text(expected, encoding="utf-8")
     return config
 
+
+def configure_maven_settings(paths: RuntimePaths) -> Path:
+    """Activate the external repositories required by ABBA's pinned transitives.
+
+    jgo 1.0.6 does not reliably propagate its rc repositories to every Maven
+    resolution on Windows.  A builder-local Maven settings profile is therefore
+    the authoritative repository configuration.
+    """
+    paths.maven_settings.parent.mkdir(parents=True, exist_ok=True)
+    repositories = "\n".join(
+        """        <repository>
+          <id>{name}</id>
+          <url>{url}</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>""".format(name=name, url=url)
+        for name, url in JGO_REPOSITORIES.items()
+    )
+    expected = """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+  <profiles>
+    <profile>
+      <id>native-abba-repositories</id>
+      <repositories>
+{repositories}
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>native-abba-repositories</activeProfile>
+  </activeProfiles>
+</settings>
+""".format(repositories=repositories)
+    if paths.maven_settings.exists() and paths.maven_settings.read_text(encoding="utf-8") != expected:
+        raise NativeRuntimeError(
+            "MAVEN_CACHE_CORRUPT", f"unexpected builder-local Maven settings: {paths.maven_settings}"
+        )
+    paths.maven_settings.write_text(expected, encoding="utf-8")
+    try:
+        ET.parse(paths.maven_settings)
+    except ET.ParseError as exc:
+        raise NativeRuntimeError("MAVEN_CACHE_CORRUPT", f"invalid generated Maven settings: {exc}") from exc
+    return paths.maven_settings
+
 def install_vendor_package() -> Path:
     """Expose the direct vendor directory under its original package name."""
     target = ROOT / "data/native_abba_runtime/python/abba_python"
@@ -322,8 +372,9 @@ def initialize_native_api(paths: RuntimePaths | None = None):
     paths = paths or RuntimePaths()
     paths.activate()
     validate_java(paths)
-    validate_maven(paths)
     configure_jgo(paths)
+    configure_maven_settings(paths)
+    validate_maven(paths)
     install_vendor_package()
     validate_python_bridge()
     try:
