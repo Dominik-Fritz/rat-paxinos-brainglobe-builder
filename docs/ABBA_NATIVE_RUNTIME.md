@@ -83,10 +83,12 @@ completion and exactly 588 restored slices are required before export. The
 complete Maven coordinate list is
 kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 
-The native BDV output transform must be axis-aligned at exactly 0.04 mm and its
-translation must lie on the 40-µm target grid. The renderer uses that Java
-source transform to crop/place the native raster on the explicit zero-origin
-608×286×409 AP/SI/LR grid; it does not infer placement from array shape. The
+The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
+may crop its export at a half-voxel origin, so the renderer uses the complete
+Java source transform to linearly resample that already natively transformed
+raster onto the explicit zero-origin 608×286×409 AP/SI/LR voxel centres. This
+grid conversion is plane-wise, uses constant-zero edges, and never rounds a
+fractional origin or reimplements the BigWarp TPS. The
 fixed runtime atlas view exposes the already validated AP/SI/LR arrays to ABBA
 as `asr` without permuting or modifying the installed atlas data or metadata.
 

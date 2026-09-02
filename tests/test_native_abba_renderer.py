@@ -98,6 +98,32 @@ class NativeGridPlacementTests(unittest.TestCase):
         np.testing.assert_array_equal(result[0:2, 0:2, 1:4], payload)
         self.assertEqual(int(result[:, :, 0].sum()), 0)
 
+    def test_half_voxel_native_origin_is_linearly_resampled_not_rounded(self):
+        import sys
+        import types
+        import numpy as np
+        class Transform:
+            values = [[0.04, 0.0, 0.0, -0.02], [0.0, 0.04, 0.0, 0.0], [0.0, 0.0, 0.04, 0.0]]
+            def get(self, row, column): return self.values[row][column]
+        fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
+        rai = mock.Mock()
+        rai.dimension.side_effect = [4, 2, 2]
+        source = mock.Mock()
+        source.getSource.return_value = rai
+        source.getSourceTransform.side_effect = lambda time, level, transform: None
+        sac = mock.Mock()
+        sac.getSpimSource.return_value = source
+        ij = mock.Mock()
+        payload = np.zeros((2, 2, 4), dtype=np.float32)
+        payload[:, :, 1] = 10
+        payload[:, :, 2] = 20
+        ij.py.from_java.return_value = payload
+        with mock.patch.dict(sys.modules, {"scyjava": fake_scyjava}):
+            result = renderer._source_to_ap_si_lr(ij, sac)
+        # Target LR=0 samples source LR=0.5: a true half-voxel interpolation.
+        np.testing.assert_allclose(result[0:2, 0:2, 0], 5.0)
+        np.testing.assert_allclose(result[0:2, 0:2, 1], 15.0)
+
 
 class FixedAtlasViewTests(unittest.TestCase):
     def test_runtime_view_exposes_ap_si_lr_arrays_as_asr_without_permutation(self):

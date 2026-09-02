@@ -167,7 +167,12 @@ def _find_multipositioner(module, fallback):
     raise NisslBuildError("NATIVE_STATE_LOAD", f"ZIP import returned no MultiSlicePositioner; outputs={keys}")
 
 def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
-    """Place the native BDV raster on the explicit zero-origin Paxinos grid."""
+    """Resample the native BDV raster onto the fixed atlas voxel centres.
+
+    ABBA's native export is cropped and may start between fixed-atlas voxel
+    centres.  The TPS has already been evaluated by Java at this point; this
+    step only performs an explicit linear change of sampling grid.
+    """
     source = sac.getSpimSource()
     rai = source.getSource(0, 0)
     converted = ij.py.from_java(rai)
@@ -196,30 +201,40 @@ def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
             "NATIVE_EXPORT_GRID",
             f"native output must have axis-aligned 0.04-mm XYZ transform, got {matrix.tolist()}",
         )
-    starts_xyz_float = matrix[:, 3] / expected_scale_mm
-    starts_xyz = np.rint(starts_xyz_float).astype(int)
-    if not np.allclose(starts_xyz_float, starts_xyz, rtol=0, atol=1e-6):
+    starts_xyz = matrix[:, 3] / expected_scale_mm
+    starts = starts_xyz[::-1]  # AP, SI, LR
+    overlaps = [
+        max(0.0, min(float(source_size - 1), float(target_size - 1 - start))) >=
+        min(float(source_size - 1), max(0.0, float(-start)))
+        for start, source_size, target_size in zip(starts, source_ap_si_lr.shape, TARGET_SHAPE)
+    ]
+    if not all(overlaps):
         raise NisslBuildError(
-            "NATIVE_EXPORT_ORIGIN",
-            f"native output origin is not on the 40-um target grid: {matrix[:, 3].tolist()}",
+            "NATIVE_EXPORT_BOUNDS",
+            f"native source {source_ap_si_lr.shape} at AP/SI/LR origin {starts.tolist()} misses {TARGET_SHAPE}",
         )
-    starts = (int(starts_xyz[2]), int(starts_xyz[1]), int(starts_xyz[0]))  # AP, SI, LR
+
+    # target voxel i is at world 0.04*i; source voxel j is at
+    # world 0.04*j+translation, hence j=i-translation/0.04.  Render one AP
+    # plane at a time to keep peak memory bounded and make interpolation and
+    # edge behaviour explicit.
+    from scipy.ndimage import affine_transform
     target = np.zeros(TARGET_SHAPE, dtype=source_ap_si_lr.dtype)
-    source_slices = []
-    target_slices = []
-    for start_index, source_size, target_size in zip(starts, source_ap_si_lr.shape, TARGET_SHAPE):
-        target_begin = max(0, start_index)
-        target_end = min(target_size, start_index + source_size)
-        if target_end <= target_begin:
-            raise NisslBuildError(
-                "NATIVE_EXPORT_BOUNDS",
-                f"native source {source_ap_si_lr.shape} at AP/SI/LR origin {starts} misses {TARGET_SHAPE}",
-            )
-        source_begin = target_begin - start_index
-        source_end = source_begin + (target_end - target_begin)
-        source_slices.append(slice(source_begin, source_end))
-        target_slices.append(slice(target_begin, target_end))
-    target[tuple(target_slices)] = source_ap_si_lr[tuple(source_slices)]
+    identity = np.eye(3, dtype=np.float64)
+    for ap in range(TARGET_SHAPE[0]):
+        offset = np.array([ap - starts[0], -starts[1], -starts[2]], dtype=np.float64)
+        plane = affine_transform(
+            source_ap_si_lr,
+            identity,
+            offset=offset,
+            output_shape=(1, TARGET_SHAPE[1], TARGET_SHAPE[2]),
+            output=source_ap_si_lr.dtype,
+            order=1,
+            mode="constant",
+            cval=0,
+            prefilter=False,
+        )
+        target[ap] = plane[0]
     return target
 
 
