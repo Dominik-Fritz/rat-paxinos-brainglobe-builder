@@ -84,9 +84,9 @@ class RuntimePaths:
     @property
     def maven_home(self) -> Path: return self.maven / "apache-maven-3.9.9"
     @property
-    def maven_repository(self) -> Path: return self.root / "maven_repository"
-    @property
     def maven_user_home(self) -> Path: return self.root / "maven_user_home"
+    @property
+    def maven_repository(self) -> Path: return self.maven_user_home / ".m2" / "repository"
     @property
     def maven_settings(self) -> Path: return self.maven_user_home / ".m2" / "settings.xml"
     @property

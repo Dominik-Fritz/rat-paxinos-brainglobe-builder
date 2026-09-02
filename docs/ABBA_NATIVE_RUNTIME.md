@@ -33,6 +33,12 @@ builder-local Maven `settings.xml`. `MAVEN_ARGS` forces every Maven 3.9 command
 to use that exact file. This is the authoritative fix for the Bio-Formats and
 OMERO artifacts that are not published in Maven Central.
 
+The Maven local repository deliberately remains at
+`maven_user_home/.m2/repository`. Legacy jgo computes dependency source paths
+from that conventional location. Maven and jgo must therefore share this exact
+directory; redirecting Maven to a sibling cache makes jgo look for successfully
+downloaded JARs at the wrong path on Windows.
+
 ABBA 0.11.0 initializes PyImageJ with the exact Maven coordinates recorded by
 the vendored `Abba.get_java_dependencies()`. The preflight resolves the actual
 Java classes used by the vendor for ABBA startup, state loading, moving-source

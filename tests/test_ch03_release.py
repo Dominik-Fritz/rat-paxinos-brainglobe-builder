@@ -481,6 +481,16 @@ class NativeRuntimePolicyTests(unittest.TestCase):
             active = tree.find(".//m:activeProfile", namespace)
             self.assertEqual(active.text, "native-abba-repositories")
 
+    def test_maven_and_legacy_jgo_use_the_same_local_repository(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            self.assertEqual(
+                paths.maven_repository,
+                paths.maven_user_home / ".m2" / "repository",
+            )
+            self.assertIn(str(paths.maven_repository), paths.environment()["MAVEN_OPTS"])
+
 
 class NativeDependencyParityTests(unittest.TestCase):
     def test_runtime_coordinates_equal_vendored_get_java_dependencies(self):
