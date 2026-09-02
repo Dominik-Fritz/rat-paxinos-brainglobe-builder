@@ -501,7 +501,8 @@ class NativeDependencyParityTests(unittest.TestCase):
         returned = next(node.value for node in ast.walk(function) if isinstance(node, ast.Return))
         vendor_dependencies = ast.literal_eval(returned)
         self.assertEqual(list(runtime.JAVA_DEPENDENCIES), vendor_dependencies)
-        self.assertIn("ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand", runtime.REQUIRED_JAVA_CLASSES)
+        self.assertIn("ch.epfl.biop.atlas.aligner.command.ABBAStateLoadCommand", runtime.REQUIRED_JAVA_CLASSES)
+        self.assertNotIn("ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand", runtime.REQUIRED_JAVA_CLASSES)
 
 
 class PythonBridgeCompatibilityTests(unittest.TestCase):

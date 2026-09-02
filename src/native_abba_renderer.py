@@ -283,11 +283,14 @@ def render_native(package_path: str) -> dict:
         binding = build_rebound_state(state_path, planes, rebound_path)
         ij, _ = runtime.initialize_native_api(paths)
         abba, fixed_source_report = _open_fixed_abba(ij, _atlas_name())
-        # `.abba` is a standard ZIP state. The vendored API provides a
-        # dedicated native importer for it; ABBAStateLoadCommand is for the
-        # unpacked registration-state file and must not receive a ZIP.
-        imported = abba.import_std_zip_state(_java_file(rebound_path))
-        abba.mp = _find_multipositioner(imported, abba.mp)
+        # This authoritative `.abba` is ABBA's three-member project state
+        # (sources.json, state.json, BDV XML), not a "standard ZIP export".
+        # ImportStdZipStateCommand expects a different interchange format with
+        # meta.json.  Use the vendored state_load API so ABBA restores its own
+        # project/source serialization natively.
+        loaded = abba.state_load(_java_file(rebound_path))
+        if not bool(loaded):
+            raise NisslBuildError("NATIVE_STATE_LOAD", "ABBAStateLoadCommand reported failure")
         if int(abba.get_n_slices()) != 588:
             raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {abba.get_n_slices()}")
         abba.select_all_slices()

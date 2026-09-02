@@ -66,10 +66,11 @@ class NativeZipImportTests(unittest.TestCase):
         module.getOutputs.return_value = outputs
         self.assertIs(renderer._find_multipositioner(module, None), positioner)
 
-    def test_renderer_uses_vendored_standard_zip_import_not_json_state_load(self):
+    def test_renderer_uses_vendored_state_loader_for_three_member_abba_project(self):
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(encoding="utf-8")
-        self.assertIn("abba.import_std_zip_state", source)
-        self.assertNotIn("abba.state_load(", source)
+        self.assertIn("abba.state_load", source)
+        self.assertNotIn("abba.import_std_zip_state", source)
+        self.assertIn("ImportStdZipStateCommand expects a different interchange format", source)
 
 
 class NativeGridPlacementTests(unittest.TestCase):

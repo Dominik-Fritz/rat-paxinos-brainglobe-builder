@@ -53,7 +53,6 @@ REQUIRED_JAVA_CLASSES = (
     "ch.epfl.biop.atlas.aligner.command.ABBAStartCommand",
     "ch.epfl.biop.atlas.aligner.command.ABBAStateLoadCommand",
     "ch.epfl.biop.atlas.aligner.command.ImportSliceFromSourcesCommand",
-    "ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand",
     "ch.epfl.biop.atlas.aligner.command.ExportResampledSlicesToBDVSourceCommand",
     "ch.epfl.biop.atlas.struct.Atlas",
     "sc.fiji.bdvpg.sourceandconverter.SourceAndConverterHelper",

@@ -64,7 +64,11 @@ entries to local Bio-Formats TIFF openers and binds `sources.json` viewsetups
 `state.json`, every BDV view registration, and every ABBA action are otherwise
 preserved. The rewritten archive contains no historical QuPath path.
 
-ABBA loads that portable archive through its vendored `ImportStdZipStateCommand`.
+ABBA loads that portable archive through its vendored `state_load` API and
+`ABBAStateLoadCommand`. The similarly named `ImportStdZipStateCommand` is not
+used: it consumes the separate standardized interchange format and requires a
+`meta.json` member which the authoritative three-member `.abba` project does
+not contain.
 The renderer requires 588 Java slices, calls the vendored
 `ExportResampledSlicesToBDVSourceCommand` at an explicit 40-µm isotropic grid,
 and discovers its output by the Java `SourceAndConverter` type rather than by a
@@ -74,9 +78,9 @@ and remains non-release-eligible until manual acceptance.
 
 ### Audited native-state and grid handling
 
-The `.abba` ZIP is loaded with the vendored `ImportStdZipStateCommand`, not the
-JSON-only `ABBAStateLoadCommand`. The returned Java `MultiSlicePositioner` must
-contain exactly 588 slices before export. The complete Maven coordinate list is
+The `.abba` ZIP is loaded with the vendored `ABBAStateLoadCommand`; successful
+completion and exactly 588 restored slices are required before export. The
+complete Maven coordinate list is
 kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 
 The native BDV output transform must be axis-aligned at exactly 0.04 mm and its
