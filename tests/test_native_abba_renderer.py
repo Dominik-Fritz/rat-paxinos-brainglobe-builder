@@ -145,11 +145,20 @@ class NativeGridPlacementTests(unittest.TestCase):
 
     def test_renderer_uses_native_neighbor_thickness_before_export(self):
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(encoding="utf-8")
+        state_load_at = source.index("loaded = abba.state_load")
+        first_wait_at = source.index("abba.wait_for_end_of_tasks()", state_load_at)
         select_at = source.index("abba.select_all_slices()")
         thickness_at = source.index("abba.set_slices_thickness_match_neighbors()")
+        second_wait_at = source.index("abba.wait_for_end_of_tasks()", first_wait_at + 1)
         export_at = source.index("abba.export_resampled_slices_to_bdv_source(")
+        self.assertLess(state_load_at, first_wait_at)
+        self.assertLess(first_wait_at, select_at)
         self.assertLess(select_at, thickness_at)
-        self.assertLess(thickness_at, export_at)
+        self.assertLess(thickness_at, second_wait_at)
+        self.assertLess(second_wait_at, export_at)
+        vendor = (Path(__file__).parents[1] / "vendor/abba_python_0_11_0/abba.py").read_text(encoding="utf-8")
+        self.assertIn("def wait_for_end_of_tasks(self):", vendor)
+        self.assertIn("self.mp.waitForTasks()", vendor)
 
 
 class FixedAtlasViewTests(unittest.TestCase):

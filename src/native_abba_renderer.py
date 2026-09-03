@@ -331,6 +331,14 @@ def render_native(package_path: str) -> dict:
         loaded = abba.state_load(_java_file(rebound_path))
         if not bool(loaded):
             raise NisslBuildError("NATIVE_STATE_LOAD", "ABBAStateLoadCommand reported failure")
+        # ABBAStateLoadCommand can return after enqueueing slice actions.  A
+        # slice-count check only proves that CreateSliceAction ran; it does not
+        # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
+        # their BigWarp transforms) finished.  Exporting here previously raced
+        # those tasks, producing a mixture of unregistered, distorted and blank
+        # sections.  Use the synchronization API shipped by ABBA 0.11 before
+        # observing or exporting the restored state.
+        abba.wait_for_end_of_tasks()
         if int(abba.get_n_slices()) != 588:
             raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {abba.get_n_slices()}")
         abba.select_all_slices()
@@ -340,6 +348,7 @@ def render_native(package_path: str) -> dict:
         # thickness so neighbouring registered sections meet; it does not
         # alter any saved registration transform or landmark.
         abba.set_slices_thickness_match_neighbors()
+        abba.wait_for_end_of_tasks()
         module = abba.export_resampled_slices_to_bdv_source(
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
             downsample_x=1, downsample_y=1, downsample_z=1,
@@ -369,6 +378,7 @@ def render_native(package_path: str) -> dict:
             "target_shape_ap_si_lr": list(TARGET_SHAPE), "target_voxel_um": 40.0,
             "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
             "slice_thickness_policy": "native_match_neighbors_for_export",
+            "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
             "blank_registered_plane_count": len(blank_registered),
             "blank_registered_ap_indices": blank_registered,
             "coverage_status": "review_required" if blank_registered else "complete",

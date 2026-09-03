@@ -79,7 +79,13 @@ and remains non-release-eligible until manual acceptance.
 ### Audited native-state and grid handling
 
 The `.abba` ZIP is loaded with the vendored `ABBAStateLoadCommand`; successful
-completion and exactly 588 restored slices are required before export. The
+completion and exactly 588 restored slices are required before export. State
+loading can enqueue `MoveSliceAction` and `RegisterSliceAction` work after the
+command returns, so the renderer calls ABBA 0.11's `waitForTasks()` synchronization
+API before inspecting/exporting slices and again after changing export thickness.
+Exporting merely after 588 `CreateSliceAction` results exist is forbidden because
+it races native BigWarp restoration and can produce unregistered, distorted, or
+blank sections. The
 complete Maven coordinate list is
 kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 
