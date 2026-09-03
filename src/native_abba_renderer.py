@@ -124,6 +124,24 @@ def _java_file(path: Path):
     return jimport("java.io.File")(str(path))
 
 
+def _restore_state_and_wait(abba, state_file) -> None:
+    """Restore all serialized actions and cross ABBA's task-queue barrier."""
+    loaded = abba.state_load(state_file)
+    if not bool(loaded):
+        raise NisslBuildError("NATIVE_STATE_LOAD", "ABBAStateLoadCommand reported failure")
+    abba.wait_for_end_of_tasks()
+    count = int(abba.get_n_slices())
+    if count != 588:
+        raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {count}")
+
+
+def _prepare_slices_for_export_and_wait(abba) -> None:
+    """Apply only native export thickness, then cross the task barrier again."""
+    abba.select_all_slices()
+    abba.set_slices_thickness_match_neighbors()
+    abba.wait_for_end_of_tasks()
+
+
 def _find_source_and_converters(module) -> list:
     """Discover command outputs by Java type, never by an assumed output key."""
     values = list(module.getOutputs().values())
@@ -328,9 +346,7 @@ def render_native(package_path: str) -> dict:
         # ImportStdZipStateCommand expects a different interchange format with
         # meta.json.  Use the vendored state_load API so ABBA restores its own
         # project/source serialization natively.
-        loaded = abba.state_load(_java_file(rebound_path))
-        if not bool(loaded):
-            raise NisslBuildError("NATIVE_STATE_LOAD", "ABBAStateLoadCommand reported failure")
+        _restore_state_and_wait(abba, _java_file(rebound_path))
         # ABBAStateLoadCommand can return after enqueueing slice actions.  A
         # slice-count check only proves that CreateSliceAction ran; it does not
         # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
@@ -338,17 +354,12 @@ def render_native(package_path: str) -> dict:
         # those tasks, producing a mixture of unregistered, distorted and blank
         # sections.  Use the synchronization API shipped by ABBA 0.11 before
         # observing or exporting the restored state.
-        abba.wait_for_end_of_tasks()
-        if int(abba.get_n_slices()) != 588:
-            raise NisslBuildError("NATIVE_STATE_LOAD", f"expected 588 slices, got {abba.get_n_slices()}")
-        abba.select_all_slices()
         # The serialized sources are 1-um-thick 2-D planes separated by 40 um.
         # A volumetric BDV export otherwise contains empty Z planes depending
         # on grid phase.  This native ABBA command changes only display/export
         # thickness so neighbouring registered sections meet; it does not
         # alter any saved registration transform or landmark.
-        abba.set_slices_thickness_match_neighbors()
-        abba.wait_for_end_of_tasks()
+        _prepare_slices_for_export_and_wait(abba)
         module = abba.export_resampled_slices_to_bdv_source(
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
             downsample_x=1, downsample_y=1, downsample_z=1,

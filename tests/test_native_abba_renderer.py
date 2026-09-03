@@ -73,6 +73,51 @@ class NativeZipImportTests(unittest.TestCase):
         self.assertIn("ImportStdZipStateCommand expects a different interchange format", source)
 
 
+class NativeTaskSynchronizationTests(unittest.TestCase):
+    class FakeAbba:
+        def __init__(self, loaded=True, count=588):
+            self.loaded = loaded
+            self.count = count
+            self.events = []
+
+        def state_load(self, state_file):
+            self.events.append(("state_load", state_file))
+            return self.loaded
+
+        def wait_for_end_of_tasks(self):
+            self.events.append(("wait", None))
+
+        def get_n_slices(self):
+            self.events.append(("count", None))
+            return self.count
+
+        def select_all_slices(self):
+            self.events.append(("select", None))
+
+        def set_slices_thickness_match_neighbors(self):
+            self.events.append(("thickness", None))
+
+    def test_state_restore_crosses_task_barrier_before_counting(self):
+        abba = self.FakeAbba()
+        renderer._restore_state_and_wait(abba, "state.abba")
+        self.assertEqual(abba.events, [
+            ("state_load", "state.abba"), ("wait", None), ("count", None)
+        ])
+
+    def test_failed_state_load_never_enters_task_queue_or_exports(self):
+        abba = self.FakeAbba(loaded=False)
+        with self.assertRaisesRegex(Exception, "ABBAStateLoadCommand reported failure"):
+            renderer._restore_state_and_wait(abba, "state.abba")
+        self.assertEqual(abba.events, [("state_load", "state.abba")])
+
+    def test_export_preparation_waits_after_thickness_command(self):
+        abba = self.FakeAbba()
+        renderer._prepare_slices_for_export_and_wait(abba)
+        self.assertEqual(abba.events, [
+            ("select", None), ("thickness", None), ("wait", None)
+        ])
+
+
 class NativeGridPlacementTests(unittest.TestCase):
     def test_bdv_transform_places_smaller_native_raster_on_target_grid(self):
         import sys
