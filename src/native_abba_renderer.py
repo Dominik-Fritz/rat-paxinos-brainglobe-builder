@@ -28,15 +28,12 @@ import native_abba_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_SHAPE = (608, 286, 409)  # AP, SI, LR
 VOXEL_SIZE_MM = 0.04
-# ABBA's coronal slice coordinates are centred in LR and SI.  AP remains the
-# absolute atlas axis (the first non-empty Paxinos plane is AP 9).  Treating
-# the cropped BDV export as if all three target axes started at world zero
-# shifted the registered anatomy by half an atlas in-plane.
-TARGET_ORIGIN_XYZ_MM = (
-    -(TARGET_SHAPE[2] * VOXEL_SIZE_MM) / 2.0,
-    -(TARGET_SHAPE[1] * VOXEL_SIZE_MM) / 2.0,
-    0.0,
-)
+# The vendored AbbaMap creates the fixed BrainGlobe source with a scale-only
+# AffineTransform3D: voxel (0, 0, 0) is world (0, 0, 0).  The native export's
+# SourceTransform is expressed in that same fixed-atlas frame.  Do not add a
+# guessed coronal centring translation here; doing so moved the atlas centre to
+# the lower-right corner and clipped most registered sections.
+TARGET_ORIGIN_XYZ_MM = (0.0, 0.0, 0.0)
 
 
 def classify_native_failure(exc: BaseException) -> NisslBuildError:

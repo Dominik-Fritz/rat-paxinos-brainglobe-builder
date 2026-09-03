@@ -128,8 +128,12 @@ class NativeGridPlacementTests(unittest.TestCase):
         np.testing.assert_allclose(result[0:2, 0:2, 0], 5.0)
         np.testing.assert_allclose(result[0:2, 0:2, 1], 15.0)
 
-    def test_target_in_plane_world_origin_is_abba_centred(self):
-        self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (-8.18, -5.72, 0.0))
+    def test_target_world_origin_matches_vendored_scale_only_abba_map(self):
+        self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (0.0, 0.0, 0.0))
+        vendor = (Path(__file__).parents[1] / "vendor/abba_python_0_11_0/abba_map.py").read_text(encoding="utf-8")
+        self.assertIn("affine_transform = AffineTransform3D()", vendor)
+        self.assertIn("affine_transform.scale", vendor)
+        self.assertNotIn("affine_transform.translate", vendor)
 
     def test_empty_registered_planes_are_reported_without_filling_or_failure(self):
         import numpy as np

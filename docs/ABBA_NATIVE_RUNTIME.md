@@ -86,10 +86,11 @@ kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
 may crop its export at a half-voxel origin, so the renderer uses the complete
 Java source transform to linearly resample that already natively transformed
-raster onto the 608×286×409 AP/SI/LR voxel centres.  The ABBA coronal world
-frame is centred in LR and SI (`-8.18`, `-5.72` mm at the first pixel edge),
-while AP retains the atlas origin. Treating LR/SI as zero-origin shifts and
-crops the registration and is forbidden. This grid conversion is plane-wise,
+raster onto the 608×286×409 AP/SI/LR voxel centres. The target world origin is
+`(0, 0, 0)` mm because the vendored `AbbaMap` gives the fixed BrainGlobe source
+a scale-only `AffineTransform3D`. Adding a guessed LR/SI centring translation
+moves the atlas centre to the lower-right corner and clips the registration;
+such a translation is forbidden. This grid conversion is plane-wise,
 uses constant-zero edges, and never rounds a fractional origin or reimplements
 the BigWarp TPS. Before export, native ABBA neighbour-matched slice thickness
 is enabled because the serialized 1-µm section thickness would otherwise leave
