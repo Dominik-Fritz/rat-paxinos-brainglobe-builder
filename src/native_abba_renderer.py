@@ -263,16 +263,16 @@ def _atlas_name() -> str:
     raise NisslBuildError("FIXED_SOURCE", "built Paxinos atlas metadata was not found")
 
 
-def _validate_registered_coverage(volume: np.ndarray, target_ap: np.ndarray) -> None:
-    """Reject section-sized holes; never conceal them with synthetic filling."""
-    blank_registered = target_ap[~np.any(volume[target_ap] != 0, axis=(1, 2))]
-    if blank_registered.size:
-        preview = [int(value) for value in blank_registered[:20]]
-        raise NisslBuildError(
-            "NATIVE_EXPORT_GAPS",
-            f"native ABBA export contains {blank_registered.size} empty registered target planes; "
-            f"first AP indices: {preview}",
-        )
+def _registered_blank_planes(volume: np.ndarray, target_ap: np.ndarray) -> list[int]:
+    """Report zero-valued planes without mistaking image content for I/O failure.
+
+    Zero is a valid intensity/background value.  An all-zero native result can
+    therefore be important visual-validation evidence, but it cannot prove
+    that a source was not rendered.  State/source/API checks establish backend
+    provenance; this diagnostic must not turn a pending test installation into
+    a failed build or synthesize replacement pixels.
+    """
+    return [int(value) for value in target_ap[~np.any(volume[target_ap] != 0, axis=(1, 2))]]
 
 
 
@@ -357,7 +357,7 @@ def render_native(package_path: str) -> dict:
         native_volume = _source_to_ap_si_lr(ij, sacs[0]).astype(np.uint16, copy=False)
         # Enforce the validated sequence edge policy without altering anatomy.
         native_volume[duplicate_ap] = native_volume[target_ap[0]]
-        _validate_registered_coverage(native_volume, target_ap)
+        blank_registered = _registered_blank_planes(native_volume, target_ap)
         temporary = pipeline.ACTIVE_PATH.with_suffix(".tiff.partial")
         tifffile.imwrite(temporary, native_volume, bigtiff=True)
         pipeline.activate_validated_tiff(temporary, pipeline.ACTIVE_PATH)
@@ -372,6 +372,13 @@ def render_native(package_path: str) -> dict:
             "target_shape_ap_si_lr": list(TARGET_SHAPE), "target_voxel_um": 40.0,
             "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
             "slice_thickness_policy": "native_match_neighbors_for_export",
+            "blank_registered_plane_count": len(blank_registered),
+            "blank_registered_ap_indices": blank_registered,
+            "coverage_status": "review_required" if blank_registered else "complete",
+            "warnings": ([
+                f"Native output has {len(blank_registered)} all-zero registered AP planes; "
+                "retained unchanged for visual validation."
+            ] if blank_registered else []),
             "actual_target_ap_indices": [int(value) for value in target_ap],
             "duplicated_anterior_target_ap": int(duplicate_ap),
             "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,

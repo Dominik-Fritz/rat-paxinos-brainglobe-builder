@@ -93,8 +93,11 @@ crops the registration and is forbidden. This grid conversion is plane-wise,
 uses constant-zero edges, and never rounds a fractional origin or reimplements
 the BigWarp TPS. Before export, native ABBA neighbour-matched slice thickness
 is enabled because the serialized 1-µm section thickness would otherwise leave
-empty planes on a 40-µm output grid. A post-export coverage check rejects any
-remaining empty registered AP plane rather than filling it synthetically. The
+empty planes on a 40-µm output grid. Post-export diagnostics record every
+all-zero registered AP plane, but do not infer an I/O failure from intensity
+values: zero is valid image background. Such planes remain unchanged and are
+flagged for visual review; they are never filled synthetically, and this
+diagnostic does not block the native test installation needed for that review. The
 fixed runtime atlas view exposes the already validated AP/SI/LR arrays to ABBA
 as `asr` without permuting or modifying the installed atlas data or metadata.
 

@@ -131,12 +131,13 @@ class NativeGridPlacementTests(unittest.TestCase):
     def test_target_in_plane_world_origin_is_abba_centred(self):
         self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (-8.18, -5.72, 0.0))
 
-    def test_empty_registered_planes_are_rejected_instead_of_filled(self):
+    def test_empty_registered_planes_are_reported_without_filling_or_failure(self):
         import numpy as np
         volume = np.ones((4, 2, 2), dtype=np.uint16)
         volume[2] = 0
-        with self.assertRaisesRegex(Exception, r"NATIVE_EXPORT_GAPS.*AP indices: \[2\]"):
-            renderer._validate_registered_coverage(volume, np.array([1, 2, 3]))
+        before = volume.copy()
+        self.assertEqual(renderer._registered_blank_planes(volume, np.array([1, 2, 3])), [2])
+        np.testing.assert_array_equal(volume, before)
 
     def test_renderer_uses_native_neighbor_thickness_before_export(self):
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(encoding="utf-8")

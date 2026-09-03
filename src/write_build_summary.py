@@ -59,8 +59,15 @@ def main() -> int:
     )
     import_report = ch03_report.get("ch03_import", {})
     reconstruction_report = ch03_report.get("abba_reconstruction", {})
+    coverage_lines: list[str] = []
     if reconstruction_report:
         reconstruction = reconstruction_report.get("reconstruction", reconstruction_report)
+        if "blank_registered_plane_count" in reconstruction:
+            coverage_lines = [
+                f"Native zero-valued registered planes: {reconstruction['blank_registered_plane_count']}",
+                f"Native zero-valued AP indices: {reconstruction.get('blank_registered_ap_indices', [])}",
+                f"Native coverage status: {reconstruction.get('coverage_status', 'review_required')}",
+            ]
         # Normalize native and legacy diagnostic reports to summary fields.
         import_report = {
             "stack_order": reconstruction_report.get(
@@ -100,6 +107,7 @@ def main() -> int:
         f"Anterior edge policy: {import_report.get('anterior_edge_policy', 'not recorded')}",
         f"Duplicated anterior target AP: {import_report.get('duplicated_anterior_target_ap', 'not recorded')}",
         f"Unused target positions: {import_report.get('unused_target_sequence_positions', 'not recorded')}",
+        *coverage_lines,
         f"Additional references: {', '.join(refs) if refs else 'none'}",
         f"ABBA visibility patch requested: {args.abba_patch}",
         "",

@@ -390,6 +390,9 @@ class BuildSummaryTests(unittest.TestCase):
                 "anterior_edge_policy": "duplicate_first_registered_plane",
                 "duplicated_anterior_target_ap": 0,
                 "unused_target_sequence_positions": {"before": 1, "after": 0},
+                "blank_registered_plane_count": 2,
+                "blank_registered_ap_indices": [162, 215],
+                "coverage_status": "review_required",
             },
         }}
         with tempfile.TemporaryDirectory() as temporary:
@@ -414,6 +417,9 @@ class BuildSummaryTests(unittest.TestCase):
             self.assertIn("Native backend verified: False", summary)
             self.assertIn("Visual parity status: not_applicable", summary)
             self.assertIn("Release eligible: False", summary)
+            self.assertIn("Native zero-valued registered planes: 2", summary)
+            self.assertIn("Native zero-valued AP indices: [162, 215]", summary)
+            self.assertIn("Native coverage status: review_required", summary)
             self.assertNotIn("not recorded", summary)
 
 
