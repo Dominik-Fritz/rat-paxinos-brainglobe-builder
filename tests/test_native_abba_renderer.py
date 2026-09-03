@@ -47,6 +47,17 @@ class NativeOutputTests(unittest.TestCase):
         self.assertIn("NATIVE_MEMORY", str(renderer.classify_native_failure(MemoryError())))
         self.assertIn("NATIVE_ENOSPC", str(renderer.classify_native_failure(OSError(28, "full"))))
 
+    def test_signal_stats_distinguish_dark_from_missing_without_normalizing(self):
+        import numpy as np
+        plane = np.array([[0, 1], [3, 0]], dtype=np.uint16)
+        before = plane.copy()
+        stats = renderer._signal_stats(plane)
+        self.assertEqual(stats["dtype"], "uint16")
+        self.assertEqual(stats["maximum"], 3.0)
+        self.assertEqual(stats["nonzero_pixels"], 2)
+        self.assertEqual(stats["nonzero_mean"], 2.0)
+        np.testing.assert_array_equal(plane, before)
+
     def test_normal_windows_path_never_calls_python_tps_builder(self):
         batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
         self.assertIn('src\\native_abba_renderer.py', batch)
@@ -139,11 +150,14 @@ class NativeGridPlacementTests(unittest.TestCase):
         ij = mock.Mock()
         payload = np.arange(12, dtype=np.uint16).reshape(2, 2, 3)
         ij.py.from_java.return_value = payload
+        diagnostics = {}
         with mock.patch.dict(sys.modules, {"scyjava": fake_scyjava}):
-            result = renderer._source_to_ap_si_lr(ij, sac)
+            result = renderer._source_to_ap_si_lr(ij, sac, diagnostics)
         self.assertEqual(result.shape, renderer.TARGET_SHAPE)
         np.testing.assert_array_equal(result[0:2, 0:2, 1:4], payload)
         self.assertEqual(int(result[:, :, 0].sum()), 0)
+        self.assertEqual(diagnostics["native_array_shape_ap_si_lr"], [2, 2, 3])
+        self.assertEqual(diagnostics["native_start_ap_si_lr_voxels"], [0.0, 0.0, 1.0])
 
     def test_half_voxel_native_origin_is_linearly_resampled_not_rounded(self):
         import sys

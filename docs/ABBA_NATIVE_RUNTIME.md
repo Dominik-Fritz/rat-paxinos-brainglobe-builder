@@ -108,6 +108,13 @@ diagnostic does not block the native test installation needed for that review. T
 fixed runtime atlas view exposes the already validated AP/SI/LR arrays to ABBA
 as `asr` without permuting or modifying the installed atlas data or metadata.
 
+The reconstruction report records the native BDV array shape, complete
+SourceTransform, calculated AP/SI/LR placement, and per-plane source/output
+intensity statistics (`dtype`, minimum, maximum, mean, non-zero count and
+non-zero mean). This distinguishes an absent native output plane from a present
+but dark input plane. Intensities are preserved exactly; the renderer performs
+no per-slice normalization, histogram matching, or brightness compensation.
+
 ### Python bridge compatibility
 
 PyImageJ 1.5.0 and ScyJava 1.10.2 use the legacy `from jgo import jgo`

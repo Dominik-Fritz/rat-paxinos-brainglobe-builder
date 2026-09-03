@@ -52,23 +52,41 @@ def classify_native_failure(exc: BaseException) -> NisslBuildError:
     return NisslBuildError("NATIVE_ABBA_RENDER", text)
 
 
-def _single_plane_tiffs(source: Path, folder: Path) -> list[Path]:
+def _signal_stats(plane: np.ndarray) -> dict:
+    """Cheap, deterministic intensity evidence; never modifies source pixels."""
+    finite = np.asarray(plane)
+    nonzero = finite[finite != 0]
+    return {
+        "dtype": str(finite.dtype),
+        "minimum": float(np.min(finite)),
+        "maximum": float(np.max(finite)),
+        "mean": float(np.mean(finite, dtype=np.float64)),
+        "nonzero_pixels": int(nonzero.size),
+        "nonzero_mean": float(np.mean(nonzero, dtype=np.float64)) if nonzero.size else None,
+    }
+
+
+def _single_plane_tiffs(source: Path, folder: Path) -> tuple[list[Path], list[dict]]:
     """Materialize temporary named planes; never use directory ordering as identity."""
     folder.mkdir(parents=True, exist_ok=True)
     volume = tifffile.memmap(source)
     paths: list[Path] = []
+    diagnostics: list[dict] = []
     try:
         if tuple(volume.shape) != (1024, 512, 512):
             raise NisslBuildError("WHS_SOURCE_SHAPE", f"expected (1024, 512, 512), got {volume.shape}")
         for source_id, waxholm_ap in enumerate(range(189, 777)):
             path = folder / f"whs_nissl_40um_ap_{waxholm_ap}.tiff"
-            tifffile.imwrite(path, np.asarray(volume[waxholm_ap]), photometric="minisblack")
+            plane = np.asarray(volume[waxholm_ap])
+            tifffile.imwrite(path, plane, photometric="minisblack")
             paths.append(path)
+            diagnostics.append({"source_id": source_id, "waxholm_ap": waxholm_ap,
+                                **_signal_stats(plane)})
             if source_id + 189 != waxholm_ap:
                 raise AssertionError("source/AP identity changed")
     finally:
         pipeline.close_memmap(volume)
-    return paths
+    return paths, diagnostics
 
 
 def _portable_opener(original: dict, path: Path) -> dict:
@@ -191,7 +209,7 @@ def _find_multipositioner(module, fallback):
     keys = [str(key) for key in module.getOutputs().keySet()]
     raise NisslBuildError("NATIVE_STATE_LOAD", f"ZIP import returned no MultiSlicePositioner; outputs={keys}")
 
-def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
+def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
     """Resample the native BDV raster onto the fixed atlas voxel centres.
 
     ABBA's native export is cropped and may start between fixed-atlas voxel
@@ -234,6 +252,13 @@ def _source_to_ap_si_lr(ij, sac) -> np.ndarray:
     nearest = np.rint(starts_xyz)
     starts_xyz = np.where(np.isclose(starts_xyz, nearest, rtol=0, atol=1e-9), nearest, starts_xyz)
     starts = starts_xyz[::-1]  # AP, SI, LR
+    if diagnostics is not None:
+        diagnostics.update({
+            "native_array_shape_ap_si_lr": list(source_ap_si_lr.shape),
+            "native_source_transform_xyz": matrix.tolist(),
+            "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
+            "native_start_ap_si_lr_voxels": starts.tolist(),
+        })
     overlaps = [
         max(0.0, min(float(source_size - 1), float(target_size - 1 - start))) >=
         min(float(source_size - 1), max(0.0, float(-start)))
@@ -336,7 +361,7 @@ def render_native(package_path: str) -> dict:
     paths.create()
     work = Path(tempfile.mkdtemp(prefix="native-render-", dir=paths.temporary))
     try:
-        planes = _single_plane_tiffs(source_path, work / "moving_sources")
+        planes, source_plane_diagnostics = _single_plane_tiffs(source_path, work / "moving_sources")
         rebound_path = paths.reports / "rebound_state.abba"
         binding = build_rebound_state(state_path, planes, rebound_path)
         ij, _ = runtime.initialize_native_api(paths)
@@ -371,10 +396,16 @@ def render_native(package_path: str) -> dict:
         sacs = _find_source_and_converters(module)
         if len(sacs) != 1:
             raise NisslBuildError("NATIVE_EXPORT_OUTPUT", f"expected one channel, got {len(sacs)}")
-        native_volume = _source_to_ap_si_lr(ij, sacs[0]).astype(np.uint16, copy=False)
+        grid_diagnostics: dict = {}
+        native_volume = _source_to_ap_si_lr(ij, sacs[0], grid_diagnostics).astype(np.uint16, copy=False)
         # Enforce the validated sequence edge policy without altering anatomy.
         native_volume[duplicate_ap] = native_volume[target_ap[0]]
         blank_registered = _registered_blank_planes(native_volume, target_ap)
+        output_plane_diagnostics = [
+            {"source_id": source_id, "waxholm_ap": source_id + 189,
+             "target_ap": int(ap), **_signal_stats(native_volume[ap])}
+            for source_id, ap in enumerate(target_ap)
+        ]
         temporary = pipeline.ACTIVE_PATH.with_suffix(".tiff.partial")
         tifffile.imwrite(temporary, native_volume, bigtiff=True)
         pipeline.activate_validated_tiff(temporary, pipeline.ACTIVE_PATH)
@@ -390,6 +421,10 @@ def render_native(package_path: str) -> dict:
             "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
             "slice_thickness_policy": "native_match_neighbors_for_export",
             "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
+            "native_grid_diagnostics": grid_diagnostics,
+            "source_plane_intensity_diagnostics": source_plane_diagnostics,
+            "output_plane_intensity_diagnostics": output_plane_diagnostics,
+            "intensity_policy": "native_values_preserved_no_per_slice_normalization",
             "blank_registered_plane_count": len(blank_registered),
             "blank_registered_ap_indices": blank_registered,
             "coverage_status": "review_required" if blank_registered else "complete",
