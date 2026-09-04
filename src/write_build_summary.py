@@ -60,8 +60,10 @@ def main() -> int:
     import_report = ch03_report.get("ch03_import", {})
     reconstruction_report = ch03_report.get("abba_reconstruction", {})
     coverage_lines: list[str] = []
+    roundtrip_criterion = "not recorded"
     if reconstruction_report:
         reconstruction = reconstruction_report.get("reconstruction", reconstruction_report)
+        roundtrip_criterion = reconstruction.get("transform_roundtrip_criterion", "not recorded")
         if "blank_registered_plane_count" in reconstruction:
             coverage_lines = [
                 f"Native zero-valued registered planes: {reconstruction['blank_registered_plane_count']}",
@@ -101,6 +103,8 @@ def main() -> int:
         f"Native backend verified: {native_backend_verified}",
         f"Visual parity status: {visual_parity_status}",
         f"Release eligible: {release_eligible}",
+        *([f"Transform roundtrip criterion: {roundtrip_criterion}"]
+          if roundtrip_criterion != "not recorded" else []),
         f"Nissl AP order: {import_report.get('stack_order', 'not recorded')}",
         f"Mapped Nissl planes: {import_report.get('mapped_plane_count', 'not recorded')}",
         f"Target sequence offset: {import_report.get('target_sequence_offset', 'not recorded')}",

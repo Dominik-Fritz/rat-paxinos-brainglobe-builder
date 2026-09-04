@@ -56,6 +56,10 @@ The old TIFF stack is comparison-only. The Python TPS implementation remains
 diagnostic-only and cannot install Ch03. A native test installation records
 `visual_parity_status: pending` and `release_eligible: false`; only a separate
 visual acceptance may change those fields to `passed` and `true`.
+Because Ch03 is non-authoritative, a renderer failure leaves the already
+installed Paxinos annotation atlas intact and completes with warnings. Passing
+`--nissl-required` changes this policy to a hard build failure for explicit
+release/integration runs.
 
 The uploaded vendor directory contains no upstream `METADATA`, `dist-info`, or
 license file. It is therefore retained as source provenance only; this
@@ -109,13 +113,17 @@ reordered, or dropped TPS mapping is reported as an inconclusive
 `NATIVE_TRANSFORM_ROUNDTRIP` audit; the renderer never substitutes that saved
 copy, a plugin, or a newly calculated transform.
 
-The save/reload comparison is an audit of ABBA's serializer, not an input to
-the renderer. Consequently an inconclusive `state_save` round trip is recorded
-as a warning and no longer aborts a build after `state_load` has succeeded.
-The previous implementation incorrectly made this auxiliary serializer check
-a prerequisite for native export, which caused Windows builds to fail before
-ABBA was allowed to render. The authoritative input ZIP remains hash-checked,
-and no mismatching saved copy is ever used for rendering.
+The persistent saved state is written to
+`reports/native_abba/native_state_roundtrip.abba`, and the per-source numerical
+comparison is always written to
+`reports/native_abba/transform_roundtrip_diff.json`. The diff contains both
+intervals, the complete transform type chain, landmark shapes and maximum
+absolute `srcPts`/`tgtPts` deltas. A genuine deformation mismatch remains a
+hard error; an unavailable optimizer-settings accessor is diagnostic-only. The
+authoritative input ZIP remains hash-checked, and the saved copy is never used
+for rendering. `v34_debug_transform_roundtrip.py <package>` runs only native
+initialization, state load/save and this diff so the evidence can be collected
+without another complete atlas build.
 
 The renderer also reads `getTolerance()` and `getMaxIteration()` from all 588
 loaded ABBA `SliceSources`, rejects invalid values, and records the distinct

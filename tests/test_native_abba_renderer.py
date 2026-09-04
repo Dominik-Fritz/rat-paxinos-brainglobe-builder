@@ -78,6 +78,22 @@ class NativeOutputTests(unittest.TestCase):
         self.assertIn("VISUAL_VALIDATION_PENDING", batch)
         self.assertIn('set "BUILD_WARNINGS=YES"', batch)
 
+    def test_optional_native_renderer_failure_preserves_completed_atlas(self):
+        batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
+        self.assertIn('if /I "%%~A"=="--nissl-required" set "NISSL_REQUIRED=YES"', batch)
+        self.assertIn("WARNING [OPTIONAL_NISSL_FAILED]", batch)
+        self.assertIn('set "WITH_NISSL=FAILED"', batch)
+        renderer_call = '"%VENV_PY%" "src\\native_abba_renderer.py" "!NISSL_PACKAGE!"'
+        self.assertIn(renderer_call, batch)
+        self.assertNotIn(renderer_call + " || goto fail", batch)
+
+    def test_roundtrip_debug_entrypoint_writes_persistent_evidence(self):
+        source = (Path(__file__).parents[1] / "src/v34_debug_transform_roundtrip.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('paths.reports / "native_state_roundtrip.abba"', source)
+        self.assertIn('paths.reports / "transform_roundtrip_diff.json"', source)
+
 
 class NativeZipImportTests(unittest.TestCase):
     def test_multipositioner_is_discovered_by_api_shape(self):
@@ -144,6 +160,16 @@ class NativeTaskSynchronizationTests(unittest.TestCase):
 
 class NativeTransformRoundtripTests(unittest.TestCase):
     @staticmethod
+    def tps(value: float, interval_min=None) -> dict:
+        return {
+            "type": "BoundedRealTransform",
+            "realTransform": {"type": "ThinplateSplineTransform",
+                              "srcPts": [[value]], "tgtPts": [[value + 1.0]]},
+            "interval_min": interval_min or [0.0, 0.0, 0.0],
+            "interval_max": [1.0, 1.0, 1.0],
+        }
+
+    @staticmethod
     def write_state(path: Path, transforms: list[dict]) -> None:
         slices = []
         for transform in transforms:
@@ -159,29 +185,32 @@ class NativeTransformRoundtripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first.abba"
             second = Path(temporary) / "second.abba"
-            transform = {"type": "BoundedRealTransform", "interval_min": [1.0, 2.0]}
+            transform = self.tps(1.0)
             self.write_state(first, [transform])
             self.write_state(second, [transform])
-            self.assertEqual(renderer._registration_fingerprints(first),
-                             renderer._registration_fingerprints(second))
+            left = renderer._registration_fingerprints(first)[0]
+            right = renderer._registration_fingerprints(second)[0]
+            self.assertEqual(left["deformation_sha256"], right["deformation_sha256"])
 
     def test_roundtrip_rejects_any_changed_native_transform(self):
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first.abba"
             second = Path(temporary) / "second.abba"
-            transforms = [{"type": "T", "value": index} for index in range(588)]
+            transforms = [self.tps(float(index)) for index in range(588)]
             changed = list(transforms)
-            changed[123] = {"type": "T", "value": -1}
+            changed[123] = self.tps(-1.0)
             self.write_state(first, transforms)
             self.write_state(second, changed)
-            with self.assertRaisesRegex(Exception, r"source_ids \[123\]"):
-                renderer._verify_transform_roundtrip(first, second)
+            diff = Path(temporary) / "diff.json"
+            with self.assertRaisesRegex(Exception, r"1/588.*first: \[123\]"):
+                renderer._verify_transform_roundtrip(first, second, diff)
+            self.assertEqual(json.loads(diff.read_text())["deformation_mismatch_count"], 1)
 
     def test_roundtrip_reports_identical_and_copied_transforms(self):
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first.abba"
             second = Path(temporary) / "second.abba"
-            transforms = [{"type": "T", "value": index // 2} for index in range(588)]
+            transforms = [self.tps(float(index // 2)) for index in range(588)]
             self.write_state(first, transforms)
             self.write_state(second, transforms)
             result = renderer._verify_transform_roundtrip(first, second)
@@ -211,24 +240,24 @@ class NativeTransformRoundtripTests(unittest.TestCase):
             self.assertTrue(result["verified"])
             self.assertEqual(result["source_dependent_wrapper_change_count"], 588)
             self.assertEqual(
-                result["verification_scope"],
-                "registration_type_and_nested_tps_control_points",
+                result["criterion"],
+                "deformation_landmarks",
             )
 
-    def test_failed_roundtrip_diagnostic_does_not_block_native_export(self):
+    def test_inversion_diagnostic_does_not_block_native_export(self):
         with mock.patch.object(
             renderer, "_save_and_verify_state_roundtrip",
-            side_effect=RuntimeError("serializer normalized state"),
+            return_value={"verified": True},
         ), mock.patch.object(
             renderer, "_audit_native_inversion_settings",
-            return_value={"verified": True},
+            side_effect=RuntimeError("optimizer accessor unavailable"),
         ):
             roundtrip, inversion, warnings = renderer._collect_state_diagnostics(
                 mock.Mock(), Path("input.abba"), Path("output.abba")
             )
-        self.assertFalse(roundtrip["verified"])
-        self.assertTrue(inversion["verified"])
-        self.assertIn("serializer normalized state", warnings[0])
+        self.assertTrue(roundtrip["verified"])
+        self.assertFalse(inversion["verified"])
+        self.assertIn("optimizer accessor unavailable", warnings[0])
 
 
 class NativeGridPlacementTests(unittest.TestCase):

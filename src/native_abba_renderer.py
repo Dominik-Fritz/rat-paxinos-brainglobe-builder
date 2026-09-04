@@ -35,6 +35,7 @@ VOXEL_SIZE_MM = 0.04
 # guessed coronal centring translation here; doing so moved the atlas centre to
 # the lower-right corner and clipped most registered sections.
 TARGET_ORIGIN_XYZ_MM = (0.0, 0.0, 0.0)
+LANDMARK_TOLERANCE_MM = 1e-9
 
 
 def classify_native_failure(exc: BaseException) -> NisslBuildError:
@@ -161,8 +162,37 @@ def _prepare_slices_for_export_and_wait(abba) -> None:
     abba.wait_for_end_of_tasks()
 
 
+def _find_tps(value):
+    if isinstance(value, dict):
+        if value.get("type") == "ThinplateSplineTransform":
+            return value
+        for child in value.values():
+            found = _find_tps(child)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_tps(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _walk_transform_types(value) -> list[str]:
+    result = []
+    if isinstance(value, dict):
+        if isinstance(value.get("type"), str):
+            result.append(value["type"])
+        for child in value.values():
+            result.extend(_walk_transform_types(child))
+    elif isinstance(value, list):
+        for child in value:
+            result.extend(_walk_transform_types(child))
+    return result
+
+
 def _registration_fingerprints(state_path: Path) -> list[dict]:
-    """Fingerprint the transforms ABBA serializes, independent of JSON whitespace."""
+    """Extract the scientific TPS payload and informative wrapper state."""
     with zipfile.ZipFile(state_path) as archive:
         slices = json.loads(archive.read("state.json"))["slices_state_list"]
     result = []
@@ -184,34 +214,42 @@ def _registration_fingerprints(state_path: Path) -> list[dict]:
         transform = json.loads(serialized)
         canonical = json.dumps(transform, sort_keys=True, separators=(",", ":"))
 
-        def find_tps(value):
-            if isinstance(value, dict):
-                if value.get("type") == "ThinplateSplineTransform":
-                    return value
-                for child in value.values():
-                    found = find_tps(child)
-                    if found is not None:
-                        return found
-            elif isinstance(value, list):
-                for child in value:
-                    found = find_tps(child)
-                    if found is not None:
-                        return found
-            return None
-
-        deformation = find_tps(transform) or transform
+        deformation = _find_tps(transform)
+        if deformation is None:
+            raise NisslBuildError(
+                "NATIVE_TRANSFORM_ROUNDTRIP",
+                f"source_id {source_id} has no ThinplateSplineTransform",
+            )
         deformation_canonical = json.dumps(deformation, sort_keys=True, separators=(",", ":"))
+        src_pts = np.asarray(deformation.get("srcPts"), dtype=np.float64)
+        tgt_pts = np.asarray(deformation.get("tgtPts"), dtype=np.float64)
+        if src_pts.ndim != 2 or tgt_pts.ndim != 2:
+            raise NisslBuildError(
+                "NATIVE_TRANSFORM_ROUNDTRIP", f"source_id {source_id} has invalid TPS landmarks"
+            )
         result.append({
             "source_id": source_id,
             "registration_type": registration.get("type"),
+            "transform_types": _walk_transform_types(transform),
+            "src_pts": src_pts,
+            "tgt_pts": tgt_pts,
+            "interval_min": transform.get("interval_min"),
+            "interval_max": transform.get("interval_max"),
             "transform_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
             "deformation_sha256": hashlib.sha256(deformation_canonical.encode("utf-8")).hexdigest(),
         })
     return result
 
 
-def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
-    """Prove native state_load/state_save preserved every serialized transform."""
+def _landmark_delta(expected: np.ndarray, observed: np.ndarray) -> float | None:
+    if expected.shape != observed.shape:
+        return None
+    return float(np.max(np.abs(expected - observed))) if expected.size else 0.0
+
+
+def _verify_transform_roundtrip(authoritative: Path, saved: Path,
+                                diff_path: Path | None = None) -> dict:
+    """Prove native state_load/state_save retained the BigWarp TPS deformation."""
     expected = _registration_fingerprints(authoritative)
     observed = _registration_fingerprints(saved)
     if len(expected) != 588 or len(observed) != 588:
@@ -219,21 +257,64 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
             "NATIVE_TRANSFORM_ROUNDTRIP",
             f"expected 588 authoritative and restored transforms, got {len(expected)} and {len(observed)}",
         )
-    # The outer BoundedRealTransform interval belongs to the moving source.
-    # Rebinding the historical QuPath source to an equivalent Bio-Formats TIFF
-    # legitimately makes ABBA reserialize that source-dependent envelope (and
-    # realtransform 4.0.4 may normalize wrapper JSON).  It is not registration
-    # evidence.  The immutable scientific payload is the nested TPS control
-    # point mapping, fingerprinted as ``deformation_sha256`` above.
-    mismatches = [
-        item["source_id"] for item, other in zip(expected, observed)
-        if item["registration_type"] != other["registration_type"]
-        or item["deformation_sha256"] != other["deformation_sha256"]
-    ]
-    if mismatches:
+    deformation_mismatches = {}
+    differences = []
+    bounds_changed = []
+    for item, other in zip(expected, observed):
+        issues = []
+        if item["registration_type"] != other["registration_type"]:
+            issues.append("registration_type changed")
+        if item["transform_types"] != other["transform_types"]:
+            issues.append("transform type chain changed")
+        src_delta = _landmark_delta(item["src_pts"], other["src_pts"])
+        tgt_delta = _landmark_delta(item["tgt_pts"], other["tgt_pts"])
+        if src_delta is None or src_delta > LANDMARK_TOLERANCE_MM:
+            issues.append(f"srcPts shape/delta changed ({src_delta})")
+        if tgt_delta is None or tgt_delta > LANDMARK_TOLERANCE_MM:
+            issues.append(f"tgtPts shape/delta changed ({tgt_delta})")
+        bounds_differ = (item["interval_min"], item["interval_max"]) != (
+            other["interval_min"], other["interval_max"]
+        )
+        if issues:
+            deformation_mismatches[item["source_id"]] = issues
+        if bounds_differ:
+            bounds_changed.append(item["source_id"])
+        if issues or bounds_differ:
+            differences.append({
+                "source_id": item["source_id"],
+                "registration_type_before": item["registration_type"],
+                "registration_type_after": other["registration_type"],
+                "transform_types_before": item["transform_types"],
+                "transform_types_after": other["transform_types"],
+                "interval_min_before": item["interval_min"],
+                "interval_min_after": other["interval_min"],
+                "interval_max_before": item["interval_max"],
+                "interval_max_after": other["interval_max"],
+                "src_pts_shape_before": list(item["src_pts"].shape),
+                "src_pts_shape_after": list(other["src_pts"].shape),
+                "tgt_pts_shape_before": list(item["tgt_pts"].shape),
+                "tgt_pts_shape_after": list(other["tgt_pts"].shape),
+                "src_pts_max_abs_delta_mm": src_delta,
+                "tgt_pts_max_abs_delta_mm": tgt_delta,
+                "landmark_count": int(item["src_pts"].shape[-1]),
+                "deformation_issues": issues,
+            })
+    diff_path = diff_path or runtime.RuntimePaths().reports / "transform_roundtrip_diff.json"
+    diff_path.parent.mkdir(parents=True, exist_ok=True)
+    diff_path.write_text(json.dumps({
+        "criterion": "deformation_landmarks",
+        "landmark_tolerance_mm": LANDMARK_TOLERANCE_MM,
+        "source_count": len(expected),
+        "deformation_mismatch_count": len(deformation_mismatches),
+        "bounds_changed_source_count": len(bounds_changed),
+        "differences": differences,
+    }, indent=2) + "\n", encoding="utf-8")
+    if deformation_mismatches:
+        ids = sorted(deformation_mismatches)
         raise NisslBuildError(
             "NATIVE_TRANSFORM_ROUNDTRIP",
-            f"native ABBA round-trip changed transforms for source_ids {mismatches[:20]}",
+            f"native ABBA round-trip changed the BigWarp deformation of {len(ids)}/588 "
+            f"sources (first: {ids[:5]}); details: {diff_path}",
         )
     hashes = [item["transform_sha256"] for item in observed]
     deformation_hashes = [item["deformation_sha256"] for item in observed]
@@ -243,41 +324,41 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
     )
     return {
         "verified": True,
-        "verification_scope": "registration_type_and_nested_tps_control_points",
+        "criterion": "deformation_landmarks",
+        "landmark_tolerance_mm": LANDMARK_TOLERANCE_MM,
         "transform_count": len(hashes),
         "unique_transform_count": len(set(hashes)),
         "unique_deformation_count": len(set(deformation_hashes)),
         "copied_deformation_count": len(deformation_hashes) - len(set(deformation_hashes)),
+        "bounds_changed_source_count": len(bounds_changed),
         "source_dependent_wrapper_change_count": wrapper_changes,
+        "diff_report": str(diff_path),
         "aggregate_sha256": hashlib.sha256("".join(hashes).encode("ascii")).hexdigest(),
         "saved_state_sha256": runtime.sha256(saved),
     }
 
 
-def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Path) -> dict:
+def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Path,
+                                     diff_path: Path | None = None) -> dict:
     saved = abba.state_save(_java_file(destination))
     if not bool(saved):
         raise NisslBuildError("NATIVE_TRANSFORM_ROUNDTRIP", "ABBAStateSaveCommand reported failure")
     abba.wait_for_end_of_tasks()
     if not destination.is_file():
         raise NisslBuildError("NATIVE_TRANSFORM_ROUNDTRIP", f"ABBA did not write {destination}")
-    return _verify_transform_roundtrip(authoritative, destination)
+    return _verify_transform_roundtrip(authoritative, destination, diff_path)
 
 
-def _collect_state_diagnostics(abba, authoritative: Path, destination: Path) -> tuple[dict, dict, list[str]]:
+def _collect_state_diagnostics(abba, authoritative: Path, destination: Path,
+                               diff_path: Path | None = None) -> tuple[dict, dict, list[str]]:
     """Collect non-rendering audits without turning them into a build gate.
 
-    ABBA's state saver and optimizer accessors are not part of the native export
-    contract.  A serializer normalization or unavailable diagnostic accessor
-    must be reported, but must not prevent ABBA from rendering the state it has
-    already loaded successfully.
+    Wrapper normalization is accepted by the landmark-aware roundtrip check.
+    A genuine TPS/type-chain mismatch remains fatal; unavailable optimizer
+    accessors are reported without blocking native rendering.
     """
     warnings = []
-    try:
-        roundtrip = _save_and_verify_state_roundtrip(abba, authoritative, destination)
-    except Exception as exc:
-        roundtrip = {"verified": False, "diagnostic_error": str(exc)}
-        warnings.append(f"Native state round-trip diagnostic was inconclusive: {exc}")
+    roundtrip = _save_and_verify_state_roundtrip(abba, authoritative, destination, diff_path)
     try:
         inversion = _audit_native_inversion_settings(abba)
     except Exception as exc:
@@ -397,7 +478,9 @@ def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
     matrix = np.array([[float(transform.get(row, column)) for column in range(4)] for row in range(3)])
     expected_scale_mm = VOXEL_SIZE_MM
     linear = matrix[:, :3]
-    if not np.allclose(linear, np.diag([expected_scale_mm] * 3), rtol=0, atol=1e-9):
+    if not np.allclose(
+        linear, np.diag([expected_scale_mm] * 3), rtol=1e-9, atol=1e-12
+    ):
         raise NisslBuildError(
             "NATIVE_EXPORT_GRID",
             f"native output must have axis-aligned 0.04-mm XYZ transform, got {matrix.tolist()}",
@@ -567,7 +650,10 @@ def render_native(package_path: str) -> dict:
         # project/source serialization natively.
         _restore_state_and_wait(abba, _java_file(rebound_path))
         transform_roundtrip, inversion_settings, diagnostic_warnings = _collect_state_diagnostics(
-            abba, state_path, work / "native_state_roundtrip.abba"
+            abba,
+            state_path,
+            paths.reports / "native_state_roundtrip.abba",
+            paths.reports / "transform_roundtrip_diff.json",
         )
         # ABBAStateLoadCommand can return after enqueueing slice actions.  A
         # slice-count check only proves that CreateSliceAction ran; it does not
@@ -622,6 +708,7 @@ def render_native(package_path: str) -> dict:
             "native_export_margin_z_um": 40.0,
             "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
             "native_transform_roundtrip": transform_roundtrip,
+            "transform_roundtrip_criterion": "deformation_landmarks",
             "native_inversion_settings": inversion_settings,
             "java_dependencies": list(runtime.JAVA_DEPENDENCIES),
             "java_dependency_overrides": runtime.JAVA_DEPENDENCY_OVERRIDES,

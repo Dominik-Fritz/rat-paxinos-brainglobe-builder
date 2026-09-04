@@ -29,6 +29,7 @@ set "WITH_NISSL=YES"
 set "NISSL_PACKAGE="
 set "NON_INTERACTIVE=NO"
 set "REQUIRE_ABBA=NO"
+set "NISSL_REQUIRED=NO"
 set "BUILD_WARNINGS=NO"
 
 for %%A in (%*) do (
@@ -37,6 +38,7 @@ for %%A in (%*) do (
     if /I "%%~A"=="--without-nissl" set "WITH_NISSL=NO"
     if /I "%%~A"=="--non-interactive" set "NON_INTERACTIVE=YES"
     if /I "%%~A"=="--require-abba" set "REQUIRE_ABBA=YES"
+    if /I "%%~A"=="--nissl-required" set "NISSL_REQUIRED=YES"
 )
 
 call :phase "1/6" "Runtime and dependency setup"
@@ -289,14 +291,26 @@ if /I "%WITH_NISSL%"=="NO" (
         goto fail
     )
     echo Nissl package: !NISSL_PACKAGE!
-    "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!" || goto fail
-    "%VENV_PY%" "src\summarize_native_abba_diagnostics.py" --root "%BUILDER_ROOT%"
-    if not "!ERRORLEVEL!"=="0" (
-        echo WARNING [NATIVE_DIAGNOSTICS_SUMMARY]: Compact native diagnostics could not be written.
+    "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!"
+    set "NISSL_RENDER_EXIT=!ERRORLEVEL!"
+    if not "!NISSL_RENDER_EXIT!"=="0" (
+        if /I "!NISSL_REQUIRED!"=="YES" (
+            set "FORCED_FAILURE_EXIT_CODE=!NISSL_RENDER_EXIT!"
+            goto fail
+        )
+        echo WARNING [OPTIONAL_NISSL_FAILED]: Paxinos atlas remains installed without a new Ch03 channel.
+        echo Native renderer exit code: !NISSL_RENDER_EXIT!. See reports\ch03_nissl and reports\native_abba.
+        set "WITH_NISSL=FAILED"
+        set "BUILD_WARNINGS=YES"
+    ) else (
+        "%VENV_PY%" "src\summarize_native_abba_diagnostics.py" --root "%BUILDER_ROOT%"
+        if not "!ERRORLEVEL!"=="0" (
+            echo WARNING [NATIVE_DIAGNOSTICS_SUMMARY]: Compact native diagnostics could not be written.
+            set "BUILD_WARNINGS=YES"
+        )
+        echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
         set "BUILD_WARNINGS=YES"
     )
-    echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
-    set "BUILD_WARNINGS=YES"
 )
 
 call :phase "6/6" "ABBA integration and final report"
@@ -341,6 +355,7 @@ echo ^|  [OK] Atlas package generated                                       ^|
 echo ^|  [OK] Paxinos annotation installed                                  ^|
 if /I "%WITH_NISSL%"=="YES" echo ^|  [OK] Registered WHS/Nissl reference installed                      ^|
 if /I "%WITH_NISSL%"=="NO" echo ^|  [--] Registered WHS/Nissl reference disabled                       ^|
+if /I "%WITH_NISSL%"=="FAILED" echo ^|  [!!] Optional WHS/Nissl reference failed; atlas retained             ^|
 if /I "%PATCH_ABBA%"=="NO" echo ^|  [--] ABBA patches disabled                                          ^|
 if /I "%PATCH_ABBA%"=="YES" if /I "%BUILD_WARNINGS%"=="NO" echo ^|  [OK] ABBA integration completed                                    ^|
 if /I "%BUILD_WARNINGS%"=="YES" echo ^|  [!!] Build completed with warnings                                ^|
@@ -350,6 +365,7 @@ echo +======================================================================+
 echo   Atlas   : paxinos_watson_rat_40um
 if /I "%WITH_NISSL%"=="YES" echo   Result  : Paxinos annotation and registered Nissl channel installed
 if /I "%WITH_NISSL%"=="NO" echo   Result  : Paxinos annotation installed; Nissl explicitly disabled
+if /I "%WITH_NISSL%"=="FAILED" echo   Result  : Paxinos annotation installed; optional Nissl build failed
 echo   Reports : %BUILDER_ROOT%\reports
 echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
 echo.

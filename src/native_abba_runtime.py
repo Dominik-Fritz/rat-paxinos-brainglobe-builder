@@ -199,7 +199,10 @@ def inspect_state(path: Path = STATE) -> dict:
     bad = [index for index, (source, name) in enumerate(zip(sources, expected))
            if not source.get("source_name", "").startswith(name)]
     if bad:
-        raise NativeRuntimeError("SOURCE_REBINDING", f"invalid source_ids/AP planes: {bad[:16]}")
+        raise NativeRuntimeError(
+            "SOURCE_REBINDING",
+            f"invalid source/AP identity for {len(bad)}/588 sources (first: {bad[:16]})",
+        )
     slices = state.get("slices_state_list", [])
     if len(slices) != 588:
         raise NativeRuntimeError("ABBA_STATE_SLICES", f"expected 588 slice states, got {len(slices)}")
