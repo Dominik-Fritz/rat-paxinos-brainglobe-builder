@@ -117,6 +117,12 @@ intensity statistics (`dtype`, minimum, maximum, mean, non-zero count and
 non-zero mean). This distinguishes an absent native output plane from a present
 but dark input plane. Intensities are preserved exactly; the renderer performs
 no per-slice normalization, histogram matching, or brightness compensation.
+Because the full per-plane JSON is large, every successful builder run also
+writes `reports/native_abba/native_diagnostics_summary.txt` and `.json`. These
+compact files identify source-native gaps versus export losses, summarize
+output/source intensity ratios, preserve the complete native grid transform,
+and report the median SI/LR signal-to-label centroid offset without applying an
+automatic alignment correction.
 
 ### Python bridge compatibility
 

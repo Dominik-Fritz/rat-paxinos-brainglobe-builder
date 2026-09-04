@@ -290,6 +290,11 @@ if /I "%WITH_NISSL%"=="NO" (
     )
     echo Nissl package: !NISSL_PACKAGE!
     "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!" || goto fail
+    "%VENV_PY%" "src\summarize_native_abba_diagnostics.py" --root "%BUILDER_ROOT%"
+    if not "!ERRORLEVEL!"=="0" (
+        echo WARNING [NATIVE_DIAGNOSTICS_SUMMARY]: Compact native diagnostics could not be written.
+        set "BUILD_WARNINGS=YES"
+    )
     echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
     set "BUILD_WARNINGS=YES"
 )

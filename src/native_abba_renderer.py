@@ -319,6 +319,38 @@ def _registered_blank_planes(volume: np.ndarray, target_ap: np.ndarray) -> list[
     return [int(value) for value in target_ap[~np.any(volume[target_ap] != 0, axis=(1, 2))]]
 
 
+def _spatial_diagnostics(labels: np.ndarray, volume: np.ndarray, target_ap: np.ndarray) -> dict:
+    """Quantify residual placement without shifting or masking any pixels."""
+    planes = []
+    centroid_deltas = []
+    for ap in target_ap:
+        label_coords = np.argwhere(labels[ap] != 0)
+        signal_coords = np.argwhere(volume[ap] != 0)
+        if not label_coords.size or not signal_coords.size:
+            continue
+        label_centroid = label_coords.mean(axis=0)
+        signal_centroid = signal_coords.mean(axis=0)
+        delta = signal_centroid - label_centroid
+        centroid_deltas.append(delta)
+        planes.append({
+            "ap": int(ap),
+            "centroid_delta_si_lr_voxels": delta.tolist(),
+            "label_bbox_si_lr": [label_coords.min(axis=0).tolist(), label_coords.max(axis=0).tolist()],
+            "signal_bbox_si_lr": [signal_coords.min(axis=0).tolist(), signal_coords.max(axis=0).tolist()],
+        })
+    median = (np.median(np.asarray(centroid_deltas), axis=0).tolist()
+              if centroid_deltas else None)
+    return {
+        "definition": "Non-zero signal-vs-label support; diagnostic only, no correction applied.",
+        "measured_plane_count": len(planes),
+        "median_centroid_delta_si_lr_voxels": median,
+        "median_centroid_delta_si_lr_um": ([value * 40.0 for value in median]
+                                            if median is not None else None),
+        "planes": planes,
+        "pixels_modified": False,
+    }
+
+
 
 class _AbbaAtlasView:
     """Expose the already AP/SI/LR arrays in ABBA's required ASR convention."""
@@ -405,6 +437,7 @@ def render_native(package_path: str) -> dict:
         # Enforce the validated sequence edge policy without altering anatomy.
         native_volume[duplicate_ap] = native_volume[target_ap[0]]
         blank_registered = _registered_blank_planes(native_volume, target_ap)
+        spatial_diagnostics = _spatial_diagnostics(labels, native_volume, target_ap)
         output_plane_diagnostics = [
             {"source_id": source_id, "waxholm_ap": source_id + 189,
              "target_ap": int(ap), **_signal_stats(native_volume[ap])}
@@ -431,6 +464,7 @@ def render_native(package_path: str) -> dict:
             "source_plane_intensity_diagnostics": source_plane_diagnostics,
             "output_plane_intensity_diagnostics": output_plane_diagnostics,
             "intensity_policy": "native_values_preserved_no_per_slice_normalization",
+            "spatial_diagnostics": spatial_diagnostics,
             "blank_registered_plane_count": len(blank_registered),
             "blank_registered_ap_indices": blank_registered,
             "coverage_status": "review_required" if blank_registered else "complete",

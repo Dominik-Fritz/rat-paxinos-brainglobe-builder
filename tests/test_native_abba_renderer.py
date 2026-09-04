@@ -58,6 +58,19 @@ class NativeOutputTests(unittest.TestCase):
         self.assertEqual(stats["nonzero_mean"], 2.0)
         np.testing.assert_array_equal(plane, before)
 
+    def test_spatial_diagnostics_measure_residual_signal_offset_without_changes(self):
+        import numpy as np
+        labels = np.zeros((1, 5, 5), dtype=np.uint16)
+        volume = np.zeros_like(labels)
+        labels[0, 1:3, 1:3] = 1
+        volume[0, 2:4, 3:5] = 7
+        before = volume.copy()
+        result = renderer._spatial_diagnostics(labels, volume, np.array([0]))
+        self.assertEqual(result["median_centroid_delta_si_lr_voxels"], [1.0, 2.0])
+        self.assertEqual(result["median_centroid_delta_si_lr_um"], [40.0, 80.0])
+        self.assertFalse(result["pixels_modified"])
+        np.testing.assert_array_equal(volume, before)
+
     def test_normal_windows_path_never_calls_python_tps_builder(self):
         batch = (Path(__file__).parents[1] / "run_builder.bat").read_text(encoding="utf-8")
         self.assertIn('src\\native_abba_renderer.py', batch)
