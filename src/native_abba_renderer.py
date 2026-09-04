@@ -219,7 +219,17 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
             "NATIVE_TRANSFORM_ROUNDTRIP",
             f"expected 588 authoritative and restored transforms, got {len(expected)} and {len(observed)}",
         )
-    mismatches = [item["source_id"] for item, other in zip(expected, observed) if item != other]
+    # The outer BoundedRealTransform interval belongs to the moving source.
+    # Rebinding the historical QuPath source to an equivalent Bio-Formats TIFF
+    # legitimately makes ABBA reserialize that source-dependent envelope (and
+    # realtransform 4.0.4 may normalize wrapper JSON).  It is not registration
+    # evidence.  The immutable scientific payload is the nested TPS control
+    # point mapping, fingerprinted as ``deformation_sha256`` above.
+    mismatches = [
+        item["source_id"] for item, other in zip(expected, observed)
+        if item["registration_type"] != other["registration_type"]
+        or item["deformation_sha256"] != other["deformation_sha256"]
+    ]
     if mismatches:
         raise NisslBuildError(
             "NATIVE_TRANSFORM_ROUNDTRIP",
@@ -227,12 +237,18 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
         )
     hashes = [item["transform_sha256"] for item in observed]
     deformation_hashes = [item["deformation_sha256"] for item in observed]
+    wrapper_changes = sum(
+        item["transform_sha256"] != other["transform_sha256"]
+        for item, other in zip(expected, observed)
+    )
     return {
         "verified": True,
+        "verification_scope": "registration_type_and_nested_tps_control_points",
         "transform_count": len(hashes),
         "unique_transform_count": len(set(hashes)),
         "unique_deformation_count": len(set(deformation_hashes)),
         "copied_deformation_count": len(deformation_hashes) - len(set(deformation_hashes)),
+        "source_dependent_wrapper_change_count": wrapper_changes,
         "aggregate_sha256": hashlib.sha256("".join(hashes).encode("ascii")).hexdigest(),
         "saved_state_sha256": runtime.sha256(saved),
     }

@@ -96,11 +96,16 @@ complete Maven coordinate list otherwise remains identical to vendored
 `get_java_dependencies()`, including its N5 modules.
 
 After the task barrier, the renderer saves the loaded project again through the
-vendored `state_save` API and compares canonical SHA-256 fingerprints of all 588
-serialized `RegisterSliceAction` transforms with the authoritative input. This
-version-specific round trip proves that ABBA 0.11 deserialized and retained the
-exact `SacBigWarp2DRegistration` transform strings before rendering. A missing,
-changed, reordered, or dropped transform aborts with
+vendored `state_save` API and compares canonical SHA-256 fingerprints of the
+registration type and nested TPS control-point mapping in all 588 serialized
+`RegisterSliceAction` transforms with the authoritative input. The outer
+`BoundedRealTransform` interval is intentionally excluded from equality: it is
+derived from the moving source and is legitimately rewritten when the historic
+QuPath source is rebound to a Bio-Formats TIFF; realtransform 4.0.4 may also
+normalize wrapper JSON. Treating that expected envelope change as a scientific
+transform change caused the previous false `NATIVE_TRANSFORM_ROUNDTRIP` failure.
+The report counts such wrapper changes separately. A missing, changed,
+reordered, or dropped TPS mapping still aborts with
 `NATIVE_TRANSFORM_ROUNDTRIP`; the renderer never substitutes a plugin or a
 newly calculated transform.
 

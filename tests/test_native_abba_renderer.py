@@ -191,6 +191,30 @@ class NativeTransformRoundtripTests(unittest.TestCase):
             self.assertEqual(result["unique_deformation_count"], 294)
             self.assertEqual(result["copied_deformation_count"], 294)
 
+    def test_roundtrip_allows_source_dependent_bounded_interval_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.abba"
+            second = Path(temporary) / "second.abba"
+            transforms = [{
+                "type": "BoundedRealTransform",
+                "realTransform": {"type": "ThinplateSplineTransform",
+                                  "srcPts": [[float(index)]],
+                                  "tgtPts": [[float(index + 1)]]},
+                "interval_min": [0.0, 0.0, 0.0],
+                "interval_max": [1.0, 1.0, 1.0],
+            } for index in range(588)]
+            rebound = [dict(transform, interval_min=[-2.0, -3.0, -4.0])
+                       for transform in transforms]
+            self.write_state(first, transforms)
+            self.write_state(second, rebound)
+            result = renderer._verify_transform_roundtrip(first, second)
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["source_dependent_wrapper_change_count"], 588)
+            self.assertEqual(
+                result["verification_scope"],
+                "registration_type_and_nested_tps_control_points",
+            )
+
 
 class NativeGridPlacementTests(unittest.TestCase):
     def test_bdv_transform_places_smaller_native_raster_on_target_grid(self):
