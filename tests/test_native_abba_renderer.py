@@ -323,7 +323,8 @@ class NativeGridPlacementTests(unittest.TestCase):
         import types
         import numpy as np
         class Transform:
-            values = [[0.04, 0.0, 0.0, 0.0], [0.0, 0.04, 0.0, 0.0],
+            values = [[0.04, 0.0, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[0]],
+                      [0.0, 0.04, 0.0, renderer.TARGET_ORIGIN_XYZ_MM[1]],
                       [0.0, 0.0, 0.04, 0.02]]
             def get(self, row, column): return self.values[row][column]
         fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
@@ -347,12 +348,13 @@ class NativeGridPlacementTests(unittest.TestCase):
         # complete section (index 1), never an artificial 55-intensity blend.
         np.testing.assert_array_equal(result[1, :2, :2], payload[1])
 
-    def test_target_world_origin_matches_vendored_scale_only_abba_map(self):
-        self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (0.0, 0.0, 0.0))
+    def test_target_world_origin_centres_voxel_centres_and_is_applied_by_abba_map(self):
+        self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (-8.16, -5.7, 0.0))
         vendor = (Path(__file__).parents[1] / "vendor/abba_python_0_11_0/abba_map.py").read_text(encoding="utf-8")
         self.assertIn("affine_transform = AffineTransform3D()", vendor)
         self.assertIn("affine_transform.scale", vendor)
-        self.assertNotIn("affine_transform.translate", vendor)
+        self.assertIn("abba_world_origin_xyz_mm", vendor)
+        self.assertIn("affine_transform.set(JDouble(value), axis, 3)", vendor)
 
     def test_empty_registered_planes_are_reported_without_filling_or_failure(self):
         import numpy as np
@@ -391,6 +393,7 @@ class FixedAtlasViewTests(unittest.TestCase):
         view = renderer._AbbaAtlasView(atlas)
         self.assertEqual(view.orientation, "asr")
         self.assertEqual(view.metadata["orientation"], "asr")
+        self.assertEqual(view.metadata["abba_world_origin_xyz_mm"], [-8.16, -5.7, 0.0])
         self.assertIs(view.annotation, atlas.annotation)
         self.assertEqual(atlas.metadata["orientation"], "pil")
 

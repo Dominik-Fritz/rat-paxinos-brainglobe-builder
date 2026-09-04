@@ -29,12 +29,16 @@ import native_abba_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_SHAPE = (608, 286, 409)  # AP, SI, LR
 VOXEL_SIZE_MM = 0.04
-# The vendored AbbaMap creates the fixed BrainGlobe source with a scale-only
-# AffineTransform3D: voxel (0, 0, 0) is world (0, 0, 0).  The native export's
-# SourceTransform is expressed in that same fixed-atlas frame.  Do not add a
-# guessed coronal centring translation here; doing so moved the atlas centre to
-# the lower-right corner and clipped most registered sections.
-TARGET_ORIGIN_XYZ_MM = (0.0, 0.0, 0.0)
+# The saved BigWarp registrations live on a coronal canvas centred at world
+# LR=0/SI=0 (registration px=-9.4, py=-6.56).  BrainGlobe has no origin field,
+# so centre the target voxel *centres* explicitly. This same origin is supplied
+# to the fixed ABBA Source and to post-export sampling; changing only one side
+# caused the previous large right/down displacement.
+TARGET_ORIGIN_XYZ_MM = (
+    -((TARGET_SHAPE[2] - 1) * VOXEL_SIZE_MM) / 2.0,
+    -((TARGET_SHAPE[1] - 1) * VOXEL_SIZE_MM) / 2.0,
+    0.0,
+)
 LANDMARK_TOLERANCE_MM = 1e-9
 
 
@@ -600,6 +604,7 @@ class _AbbaAtlasView:
         self.orientation = "asr"
         self.metadata = dict(atlas.metadata)
         self.metadata["orientation"] = "asr"
+        self.metadata["abba_world_origin_xyz_mm"] = list(TARGET_ORIGIN_XYZ_MM)
 
     def __getattr__(self, name):
         return getattr(self._atlas, name)
@@ -623,7 +628,8 @@ def _open_fixed_abba(ij, atlas_name: str):
                 headless=True, print_config=False, log_level="INFO")
     return abba, {"atlas_name": atlas_name, "shape_ap_si_lr": list(shape),
                   "installed_orientation": original_orientation,
-                  "native_abba_orientation": "asr", "array_permutation_applied": False}
+                  "native_abba_orientation": "asr", "array_permutation_applied": False,
+                  "native_fixed_source_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM)}
 
 def render_native(package_path: str) -> dict:
     package = Path(package_path).resolve()

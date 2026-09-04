@@ -136,11 +136,15 @@ validated display.
 The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
 may crop its export at a half-voxel origin, so the renderer uses the complete
 Java source transform to linearly resample that already natively transformed
-raster onto the 608×286×409 AP/SI/LR voxel centres. The target world origin is
-`(0, 0, 0)` mm because the vendored `AbbaMap` gives the fixed BrainGlobe source
-a scale-only `AffineTransform3D`. Adding a guessed LR/SI centring translation
-moves the atlas centre to the lower-right corner and clips the registration;
-such a translation is forbidden. This grid conversion is plane-wise,
+raster onto the 608×286×409 AP/SI/LR voxel centres. The saved registrations use
+a centred BigWarp canvas (`px=-9.4`, `py=-6.56`, with bounds approximately
+±9.407/±6.578 mm). A scale-only BrainGlobe Source instead placed the entire
+fixed atlas in positive LR/SI world coordinates. That made much of the target
+fall outside each `BoundedRealTransform`, explaining both the systematic right
+shift and fully invisible sections. The runtime now centres the target voxel
+centres at LR/SI zero: origin `(-8.16, -5.70, 0)` mm. The identical origin is
+applied both to the fixed ABBA Source and to post-export sampling; changing only
+one of those frames recreates the earlier clipping error. This grid conversion is plane-wise,
 uses constant-zero edges, and never rounds a fractional origin or reimplements
 the BigWarp TPS. SI/LR are linearly interpolated within each already transformed
 section, but AP uses nearest-plane selection: adjacent histology sections are

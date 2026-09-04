@@ -78,6 +78,17 @@ class AbbaMap(object):
         affine_transform = AffineTransform3D()
         affine_transform.scale(JDouble(vox_x_mm), JDouble(vox_y_mm), JDouble(vox_z_mm))
 
+        # Optional builder-provided ABBA world origin. BrainGlobe arrays have
+        # no physical origin field, while registrations created on a centred
+        # BigWarp canvas require negative LR/SI coordinates. Keep the upstream
+        # scale-only behaviour unless this explicit metadata is present.
+        world_origin = self.atlas.metadata.get('abba_world_origin_xyz_mm')
+        if world_origin is not None:
+            if len(world_origin) != 3:
+                raise ValueError('abba_world_origin_xyz_mm must contain XYZ')
+            for axis, value in enumerate(world_origin):
+                affine_transform.set(JDouble(value), axis, 3)
+
         transform_to_asr = AffineTransform3D()
 
         expected_orientation = "asr"
