@@ -142,6 +142,56 @@ class NativeTaskSynchronizationTests(unittest.TestCase):
         ])
 
 
+class NativeTransformRoundtripTests(unittest.TestCase):
+    @staticmethod
+    def write_state(path: Path, transforms: list[dict]) -> None:
+        slices = []
+        for transform in transforms:
+            slices.append({"actions": [{
+                "type": "RegisterSliceAction",
+                "registration": {"type": "SacBigWarp2DRegistration",
+                                 "transform": json.dumps(transform)},
+            }]})
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("state.json", json.dumps({"slices_state_list": slices}))
+
+    def test_fingerprint_ignores_transform_json_formatting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.abba"
+            second = Path(temporary) / "second.abba"
+            transform = {"type": "BoundedRealTransform", "interval_min": [1.0, 2.0]}
+            self.write_state(first, [transform])
+            self.write_state(second, [transform])
+            self.assertEqual(renderer._registration_fingerprints(first),
+                             renderer._registration_fingerprints(second))
+
+    def test_roundtrip_rejects_any_changed_native_transform(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.abba"
+            second = Path(temporary) / "second.abba"
+            transforms = [{"type": "T", "value": index} for index in range(588)]
+            changed = list(transforms)
+            changed[123] = {"type": "T", "value": -1}
+            self.write_state(first, transforms)
+            self.write_state(second, changed)
+            with self.assertRaisesRegex(Exception, r"source_ids \[123\]"):
+                renderer._verify_transform_roundtrip(first, second)
+
+    def test_roundtrip_reports_identical_and_copied_transforms(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "first.abba"
+            second = Path(temporary) / "second.abba"
+            transforms = [{"type": "T", "value": index // 2} for index in range(588)]
+            self.write_state(first, transforms)
+            self.write_state(second, transforms)
+            result = renderer._verify_transform_roundtrip(first, second)
+            self.assertTrue(result["verified"])
+            self.assertEqual(result["transform_count"], 588)
+            self.assertEqual(result["unique_transform_count"], 294)
+            self.assertEqual(result["unique_deformation_count"], 294)
+            self.assertEqual(result["copied_deformation_count"], 294)
+
+
 class NativeGridPlacementTests(unittest.TestCase):
     def test_bdv_transform_places_smaller_native_raster_on_target_grid(self):
         import sys

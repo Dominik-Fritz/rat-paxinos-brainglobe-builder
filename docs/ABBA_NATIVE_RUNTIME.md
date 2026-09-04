@@ -89,6 +89,15 @@ blank sections. The
 complete Maven coordinate list is
 kept identical to vendored `get_java_dependencies()`, including its N5 modules.
 
+After the task barrier, the renderer saves the loaded project again through the
+vendored `state_save` API and compares canonical SHA-256 fingerprints of all 588
+serialized `RegisterSliceAction` transforms with the authoritative input. This
+version-specific round trip proves that ABBA 0.11 deserialized and retained the
+exact `SacBigWarp2DRegistration` transform strings before rendering. A missing,
+changed, reordered, or dropped transform aborts with
+`NATIVE_TRANSFORM_ROUNDTRIP`; the renderer never substitutes a plugin or a
+newly calculated transform.
+
 The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
 may crop its export at a half-voxel origin, so the renderer uses the complete
 Java source transform to linearly resample that already natively transformed

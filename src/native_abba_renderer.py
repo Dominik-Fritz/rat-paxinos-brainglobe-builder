@@ -7,6 +7,7 @@ and transactional file/report handling.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -158,6 +159,93 @@ def _prepare_slices_for_export_and_wait(abba) -> None:
     abba.select_all_slices()
     abba.set_slices_thickness_match_neighbors()
     abba.wait_for_end_of_tasks()
+
+
+def _registration_fingerprints(state_path: Path) -> list[dict]:
+    """Fingerprint the transforms ABBA serializes, independent of JSON whitespace."""
+    with zipfile.ZipFile(state_path) as archive:
+        slices = json.loads(archive.read("state.json"))["slices_state_list"]
+    result = []
+    for source_id, slice_state in enumerate(slices):
+        actions = [action for action in slice_state["actions"]
+                   if action.get("type") == "RegisterSliceAction"]
+        if len(actions) != 1:
+            raise NisslBuildError(
+                "NATIVE_TRANSFORM_ROUNDTRIP",
+                f"source_id {source_id} has {len(actions)} RegisterSliceAction entries; expected 1",
+            )
+        registration = actions[0].get("registration", {})
+        serialized = registration.get("transform")
+        if not isinstance(serialized, str):
+            raise NisslBuildError(
+                "NATIVE_TRANSFORM_ROUNDTRIP",
+                f"source_id {source_id} has no serialized registration transform",
+            )
+        transform = json.loads(serialized)
+        canonical = json.dumps(transform, sort_keys=True, separators=(",", ":"))
+
+        def find_tps(value):
+            if isinstance(value, dict):
+                if value.get("type") == "ThinplateSplineTransform":
+                    return value
+                for child in value.values():
+                    found = find_tps(child)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = find_tps(child)
+                    if found is not None:
+                        return found
+            return None
+
+        deformation = find_tps(transform) or transform
+        deformation_canonical = json.dumps(deformation, sort_keys=True, separators=(",", ":"))
+        result.append({
+            "source_id": source_id,
+            "registration_type": registration.get("type"),
+            "transform_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "deformation_sha256": hashlib.sha256(deformation_canonical.encode("utf-8")).hexdigest(),
+        })
+    return result
+
+
+def _verify_transform_roundtrip(authoritative: Path, saved: Path) -> dict:
+    """Prove native state_load/state_save preserved every serialized transform."""
+    expected = _registration_fingerprints(authoritative)
+    observed = _registration_fingerprints(saved)
+    if len(expected) != 588 or len(observed) != 588:
+        raise NisslBuildError(
+            "NATIVE_TRANSFORM_ROUNDTRIP",
+            f"expected 588 authoritative and restored transforms, got {len(expected)} and {len(observed)}",
+        )
+    mismatches = [item["source_id"] for item, other in zip(expected, observed) if item != other]
+    if mismatches:
+        raise NisslBuildError(
+            "NATIVE_TRANSFORM_ROUNDTRIP",
+            f"native ABBA round-trip changed transforms for source_ids {mismatches[:20]}",
+        )
+    hashes = [item["transform_sha256"] for item in observed]
+    deformation_hashes = [item["deformation_sha256"] for item in observed]
+    return {
+        "verified": True,
+        "transform_count": len(hashes),
+        "unique_transform_count": len(set(hashes)),
+        "unique_deformation_count": len(set(deformation_hashes)),
+        "copied_deformation_count": len(deformation_hashes) - len(set(deformation_hashes)),
+        "aggregate_sha256": hashlib.sha256("".join(hashes).encode("ascii")).hexdigest(),
+        "saved_state_sha256": runtime.sha256(saved),
+    }
+
+
+def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Path) -> dict:
+    saved = abba.state_save(_java_file(destination))
+    if not bool(saved):
+        raise NisslBuildError("NATIVE_TRANSFORM_ROUNDTRIP", "ABBAStateSaveCommand reported failure")
+    abba.wait_for_end_of_tasks()
+    if not destination.is_file():
+        raise NisslBuildError("NATIVE_TRANSFORM_ROUNDTRIP", f"ABBA did not write {destination}")
+    return _verify_transform_roundtrip(authoritative, destination)
 
 
 def _find_source_and_converters(module) -> list:
@@ -408,6 +496,9 @@ def render_native(package_path: str) -> dict:
         # meta.json.  Use the vendored state_load API so ABBA restores its own
         # project/source serialization natively.
         _restore_state_and_wait(abba, _java_file(rebound_path))
+        transform_roundtrip = _save_and_verify_state_roundtrip(
+            abba, state_path, work / "native_state_roundtrip.abba"
+        )
         # ABBAStateLoadCommand can return after enqueueing slice actions.  A
         # slice-count check only proves that CreateSliceAction ran; it does not
         # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
@@ -460,6 +551,7 @@ def render_native(package_path: str) -> dict:
             "ap_sampling_policy": "nearest_native_plane_no_inter_slice_intensity_blending",
             "native_export_margin_z_um": 40.0,
             "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
+            "native_transform_roundtrip": transform_roundtrip,
             "native_grid_diagnostics": grid_diagnostics,
             "source_plane_intensity_diagnostics": source_plane_diagnostics,
             "output_plane_intensity_diagnostics": output_plane_diagnostics,

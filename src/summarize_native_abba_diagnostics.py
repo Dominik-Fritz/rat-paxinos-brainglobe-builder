@@ -50,6 +50,7 @@ def summarize(report: dict) -> dict:
         "source_sha256": reconstruction.get("source", {}).get("sha256"),
         "abba_state_sha256": reconstruction.get("abba_state_sha256"),
         "native_grid_diagnostics": reconstruction.get("native_grid_diagnostics"),
+        "native_transform_roundtrip": reconstruction.get("native_transform_roundtrip"),
         "ap_sampling_policy": ap_policy,
         "native_export_margin_z_um": margin,
         "source_blank_source_ids": source_blank,
