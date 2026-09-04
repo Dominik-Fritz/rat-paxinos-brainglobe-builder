@@ -248,6 +248,38 @@ def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Pat
     return _verify_transform_roundtrip(authoritative, destination)
 
 
+def _audit_native_inversion_settings(abba) -> dict:
+    """Record the ABBA 0.11 per-slice iterative-inverse settings actually in use."""
+    settings = []
+    for source_id, slice_source in enumerate(list(abba.mp.getSlices())):
+        tolerance = float(slice_source.getTolerance())
+        max_iterations = int(slice_source.getMaxIteration())
+        if not np.isfinite(tolerance) or tolerance <= 0 or max_iterations <= 0:
+            raise NisslBuildError(
+                "NATIVE_INVERSION_SETTINGS",
+                f"source_id {source_id} has invalid tolerance/max iterations "
+                f"({tolerance}, {max_iterations})",
+            )
+        settings.append((tolerance, max_iterations))
+    if len(settings) != 588:
+        raise NisslBuildError(
+            "NATIVE_INVERSION_SETTINGS", f"expected 588 slice settings, got {len(settings)}"
+        )
+    unique = sorted(set(settings))
+    return {
+        "verified": True,
+        "slice_count": len(settings),
+        "unique_settings": [
+            {"tolerance": tolerance, "max_iterations": max_iterations}
+            for tolerance, max_iterations in unique
+        ],
+        "note": (
+            "Values are read from loaded ABBA SliceSources. ABBA 0.11's iterative-wrapper "
+            "serializer does not persist these optimizer values separately."
+        ),
+    }
+
+
 def _find_source_and_converters(module) -> list:
     """Discover command outputs by Java type, never by an assumed output key."""
     values = list(module.getOutputs().values())
@@ -499,6 +531,7 @@ def render_native(package_path: str) -> dict:
         transform_roundtrip = _save_and_verify_state_roundtrip(
             abba, state_path, work / "native_state_roundtrip.abba"
         )
+        inversion_settings = _audit_native_inversion_settings(abba)
         # ABBAStateLoadCommand can return after enqueueing slice actions.  A
         # slice-count check only proves that CreateSliceAction ran; it does not
         # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
@@ -552,6 +585,9 @@ def render_native(package_path: str) -> dict:
             "native_export_margin_z_um": 40.0,
             "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
             "native_transform_roundtrip": transform_roundtrip,
+            "native_inversion_settings": inversion_settings,
+            "java_dependencies": list(runtime.JAVA_DEPENDENCIES),
+            "java_dependency_overrides": runtime.JAVA_DEPENDENCY_OVERRIDES,
             "native_grid_diagnostics": grid_diagnostics,
             "source_plane_intensity_diagnostics": source_plane_diagnostics,
             "output_plane_intensity_diagnostics": output_plane_diagnostics,

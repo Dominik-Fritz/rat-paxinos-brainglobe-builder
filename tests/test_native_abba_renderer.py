@@ -325,3 +325,27 @@ class FixedAtlasViewTests(unittest.TestCase):
         self.assertEqual(view.metadata["orientation"], "asr")
         self.assertIs(view.annotation, atlas.annotation)
         self.assertEqual(atlas.metadata["orientation"], "pil")
+
+
+class NativeInversionSettingsTests(unittest.TestCase):
+    def test_loaded_slice_optimizer_settings_are_audited(self):
+        slice_source = mock.Mock()
+        slice_source.getTolerance.return_value = 0.5
+        slice_source.getMaxIteration.return_value = 200
+        abba = mock.Mock()
+        abba.mp.getSlices.return_value = [slice_source] * 588
+        audit = renderer._audit_native_inversion_settings(abba)
+        self.assertTrue(audit["verified"])
+        self.assertEqual(audit["slice_count"], 588)
+        self.assertEqual(audit["unique_settings"], [
+            {"tolerance": 0.5, "max_iterations": 200}
+        ])
+
+    def test_invalid_loaded_optimizer_setting_is_rejected(self):
+        slice_source = mock.Mock()
+        slice_source.getTolerance.return_value = 0.0
+        slice_source.getMaxIteration.return_value = 200
+        abba = mock.Mock()
+        abba.mp.getSlices.return_value = [slice_source] * 588
+        with self.assertRaisesRegex(Exception, "NATIVE_INVERSION_SETTINGS"):
+            renderer._audit_native_inversion_settings(abba)

@@ -499,14 +499,22 @@ class NativeRuntimePolicyTests(unittest.TestCase):
 
 
 class NativeDependencyParityTests(unittest.TestCase):
-    def test_runtime_coordinates_equal_vendored_get_java_dependencies(self):
+    def test_runtime_coordinates_match_vendor_except_documented_release_override(self):
         import ast
         from src import native_abba_runtime as runtime
         tree = ast.parse((runtime.VENDOR / "abba.py").read_text(encoding="utf-8"))
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_java_dependencies")
         returned = next(node.value for node in ast.walk(function) if isinstance(node, ast.Return))
         vendor_dependencies = ast.literal_eval(returned)
-        self.assertEqual(list(runtime.JAVA_DEPENDENCIES), vendor_dependencies)
+        self.assertEqual(list(runtime.VENDORED_JAVA_DEPENDENCIES), vendor_dependencies)
+        expected = list(vendor_dependencies)
+        expected[expected.index("net.imglib2:imglib2-realtransform:4.0.3")] = (
+            "net.imglib2:imglib2-realtransform:4.0.4"
+        )
+        self.assertEqual(list(runtime.JAVA_DEPENDENCIES), expected)
+        self.assertEqual(set(runtime.JAVA_DEPENDENCY_OVERRIDES), {
+            "net.imglib2:imglib2-realtransform"
+        })
         self.assertIn("ch.epfl.biop.atlas.aligner.command.ABBAStateLoadCommand", runtime.REQUIRED_JAVA_CLASSES)
         self.assertNotIn("ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand", runtime.REQUIRED_JAVA_CLASSES)
 

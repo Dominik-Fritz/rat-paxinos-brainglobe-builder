@@ -39,8 +39,14 @@ from that conventional location. Maven and jgo must therefore share this exact
 directory; redirecting Maven to a sibling cache makes jgo look for successfully
 downloaded JARs at the wrong path on Windows.
 
-ABBA 0.11.0 initializes PyImageJ with the exact Maven coordinates recorded by
-the vendored `Abba.get_java_dependencies()`. The preflight resolves the actual
+ABBA 0.11.0 initializes PyImageJ from the Maven coordinates recorded by the
+vendored `Abba.get_java_dependencies()`, with one explicit compatibility
+correction: that helper requests `imglib2-realtransform` 4.0.3, while the
+released ABBA-Python 0.11.0 Fiji runtime ships 4.0.4. The builder therefore
+uses 4.0.4 and records both coordinates and the override in every preflight and
+reconstruction report. This distinction is scientifically relevant because
+that library evaluates the serialized TPS and iterative inverse. No other
+coordinate is changed. The preflight resolves the actual
 Java classes used by the vendor for ABBA startup, state loading, moving-source
 import, native BDV export, SourceAndConverter handling, and BigWarp TPS. Java,
 JGO, Maven, ImageJ, BrainGlobe, downloads, and temporary data use only
@@ -86,8 +92,8 @@ API before inspecting/exporting slices and again after changing export thickness
 Exporting merely after 588 `CreateSliceAction` results exist is forbidden because
 it races native BigWarp restoration and can produce unregistered, distorted, or
 blank sections. The
-complete Maven coordinate list is
-kept identical to vendored `get_java_dependencies()`, including its N5 modules.
+complete Maven coordinate list otherwise remains identical to vendored
+`get_java_dependencies()`, including its N5 modules.
 
 After the task barrier, the renderer saves the loaded project again through the
 vendored `state_save` API and compares canonical SHA-256 fingerprints of all 588
@@ -97,6 +103,14 @@ exact `SacBigWarp2DRegistration` transform strings before rendering. A missing,
 changed, reordered, or dropped transform aborts with
 `NATIVE_TRANSFORM_ROUNDTRIP`; the renderer never substitutes a plugin or a
 newly calculated transform.
+
+The renderer also reads `getTolerance()` and `getMaxIteration()` from all 588
+loaded ABBA `SliceSources`, rejects invalid values, and records the distinct
+settings. This matters because ABBA 0.11's serialized iterative-inverse wrapper
+does not separately persist those optimizer settings. Matching the 4.0.4
+release runtime and auditing the resulting values avoids silently treating a
+different library default as equivalent to the installer that created the
+validated display.
 
 The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
 may crop its export at a half-voxel origin, so the renderer uses the complete

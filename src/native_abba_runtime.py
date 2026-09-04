@@ -25,7 +25,7 @@ VENDOR = ROOT / "vendor" / "abba_python_0_11_0"
 STATE = ROOT / "resources/optional_ch03/nissl_registration_0_3_0/final_for_V_0_3.abba"
 STATE_SHA256 = "e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06"
 ABBA_VERSION = "0.11.0"
-JAVA_DEPENDENCIES = (
+VENDORED_JAVA_DEPENDENCIES = (
     "net.imagej:imagej:2.16.0",
     "net.imagej:imagej-legacy:2.0.0",
     "ch.epfl.biop:ijl-utilities-wrappers:0.11.5",
@@ -48,6 +48,23 @@ JAVA_DEPENDENCIES = (
     "org.janelia.saalfeldlab:n5-viewer_fiji:6.1.2",
     "org.janelia.saalfeldlab:n5-zarr:1.5.1",
     "org.janelia.saalfeldlab:n5-universe:2.3.0",
+)
+# ABBA-Python 0.11.0's Python helper declares realtransform 4.0.3, but the
+# released ABBA 0.11.0 Fiji installation actually ships 4.0.4.  This library
+# evaluates the saved ThinplateSplineTransform and its iterative inverse, so
+# reproducing the release runtime takes precedence over the stale helper pin.
+JAVA_DEPENDENCY_OVERRIDES = {
+    "net.imglib2:imglib2-realtransform": {
+        "vendored_python_coordinate": "net.imglib2:imglib2-realtransform:4.0.3",
+        "abba_0_11_release_coordinate": "net.imglib2:imglib2-realtransform:4.0.4",
+        "reason": "match the JAR shipped by the ABBA-Python 0.11.0 Fiji release",
+    },
+}
+JAVA_DEPENDENCIES = tuple(
+    JAVA_DEPENDENCY_OVERRIDES.get(":".join(coordinate.split(":")[:2]), {}).get(
+        "abba_0_11_release_coordinate", coordinate
+    )
+    for coordinate in VENDORED_JAVA_DEPENDENCIES
 )
 REQUIRED_JAVA_CLASSES = (
     "ch.epfl.biop.atlas.aligner.command.ABBAStartCommand",
@@ -152,7 +169,10 @@ def validate_vendor() -> None:
     if missing:
         raise NativeRuntimeError("VENDOR_LAYOUT", f"direct ABBA package layout incomplete: {missing}")
     source = (VENDOR / "abba.py").read_text(encoding="utf-8")
-    missing_dependencies = [coordinate for coordinate in JAVA_DEPENDENCIES if repr(coordinate) not in source]
+    missing_dependencies = [
+        coordinate for coordinate in VENDORED_JAVA_DEPENDENCIES
+        if repr(coordinate) not in source
+    ]
     if missing_dependencies:
         raise NativeRuntimeError("RUNTIME_VERSION", f"vendored dependency pins changed: {missing_dependencies}")
     for class_name in REQUIRED_JAVA_CLASSES[:4]:
@@ -194,6 +214,8 @@ def inspect_state(path: Path = STATE) -> dict:
         "historical_qupath_reference_present": "project.qpproj" in xml,
         "action_types": sorted({action.get("type") for item in slices for action in item.get("actions", [])}),
         "java_dependencies": list(JAVA_DEPENDENCIES),
+        "vendored_java_dependencies": list(VENDORED_JAVA_DEPENDENCIES),
+        "java_dependency_overrides": JAVA_DEPENDENCY_OVERRIDES,
         "expected_python_bridge_versions": dict(PYTHON_BRIDGE_VERSIONS),
     }
 
@@ -420,6 +442,8 @@ def write_failure_report(paths: RuntimePaths, exc: NativeRuntimeError) -> Path:
         "traceback": traceback.format_exc(),
         "cache_paths": paths.environment(),
         "java_dependencies": list(JAVA_DEPENDENCIES),
+        "vendored_java_dependencies": list(VENDORED_JAVA_DEPENDENCIES),
+        "java_dependency_overrides": JAVA_DEPENDENCY_OVERRIDES,
         "expected_python_bridge_versions": dict(PYTHON_BRIDGE_VERSIONS),
     }
     output = paths.reports / "preflight_failure.json"
