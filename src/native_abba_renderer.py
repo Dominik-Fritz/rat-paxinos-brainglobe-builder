@@ -264,6 +264,28 @@ def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Pat
     return _verify_transform_roundtrip(authoritative, destination)
 
 
+def _collect_state_diagnostics(abba, authoritative: Path, destination: Path) -> tuple[dict, dict, list[str]]:
+    """Collect non-rendering audits without turning them into a build gate.
+
+    ABBA's state saver and optimizer accessors are not part of the native export
+    contract.  A serializer normalization or unavailable diagnostic accessor
+    must be reported, but must not prevent ABBA from rendering the state it has
+    already loaded successfully.
+    """
+    warnings = []
+    try:
+        roundtrip = _save_and_verify_state_roundtrip(abba, authoritative, destination)
+    except Exception as exc:
+        roundtrip = {"verified": False, "diagnostic_error": str(exc)}
+        warnings.append(f"Native state round-trip diagnostic was inconclusive: {exc}")
+    try:
+        inversion = _audit_native_inversion_settings(abba)
+    except Exception as exc:
+        inversion = {"verified": False, "diagnostic_error": str(exc)}
+        warnings.append(f"Native inversion-settings diagnostic was unavailable: {exc}")
+    return roundtrip, inversion, warnings
+
+
 def _audit_native_inversion_settings(abba) -> dict:
     """Record the ABBA 0.11 per-slice iterative-inverse settings actually in use."""
     settings = []
@@ -544,10 +566,9 @@ def render_native(package_path: str) -> dict:
         # meta.json.  Use the vendored state_load API so ABBA restores its own
         # project/source serialization natively.
         _restore_state_and_wait(abba, _java_file(rebound_path))
-        transform_roundtrip = _save_and_verify_state_roundtrip(
+        transform_roundtrip, inversion_settings, diagnostic_warnings = _collect_state_diagnostics(
             abba, state_path, work / "native_state_roundtrip.abba"
         )
-        inversion_settings = _audit_native_inversion_settings(abba)
         # ABBAStateLoadCommand can return after enqueueing slice actions.  A
         # slice-count check only proves that CreateSliceAction ran; it does not
         # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
@@ -612,7 +633,7 @@ def render_native(package_path: str) -> dict:
             "blank_registered_plane_count": len(blank_registered),
             "blank_registered_ap_indices": blank_registered,
             "coverage_status": "review_required" if blank_registered else "complete",
-            "warnings": ([
+            "warnings": diagnostic_warnings + ([
                 f"Native output has {len(blank_registered)} all-zero registered AP planes; "
                 "retained unchanged for visual validation."
             ] if blank_registered else []),

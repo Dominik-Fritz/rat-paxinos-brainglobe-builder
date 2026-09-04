@@ -105,9 +105,17 @@ QuPath source is rebound to a Bio-Formats TIFF; realtransform 4.0.4 may also
 normalize wrapper JSON. Treating that expected envelope change as a scientific
 transform change caused the previous false `NATIVE_TRANSFORM_ROUNDTRIP` failure.
 The report counts such wrapper changes separately. A missing, changed,
-reordered, or dropped TPS mapping still aborts with
-`NATIVE_TRANSFORM_ROUNDTRIP`; the renderer never substitutes a plugin or a
-newly calculated transform.
+reordered, or dropped TPS mapping is reported as an inconclusive
+`NATIVE_TRANSFORM_ROUNDTRIP` audit; the renderer never substitutes that saved
+copy, a plugin, or a newly calculated transform.
+
+The save/reload comparison is an audit of ABBA's serializer, not an input to
+the renderer. Consequently an inconclusive `state_save` round trip is recorded
+as a warning and no longer aborts a build after `state_load` has succeeded.
+The previous implementation incorrectly made this auxiliary serializer check
+a prerequisite for native export, which caused Windows builds to fail before
+ABBA was allowed to render. The authoritative input ZIP remains hash-checked,
+and no mismatching saved copy is ever used for rendering.
 
 The renderer also reads `getTolerance()` and `getMaxIteration()` from all 588
 loaded ABBA `SliceSources`, rejects invalid values, and records the distinct

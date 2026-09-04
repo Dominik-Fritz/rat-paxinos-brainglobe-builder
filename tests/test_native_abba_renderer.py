@@ -215,6 +215,21 @@ class NativeTransformRoundtripTests(unittest.TestCase):
                 "registration_type_and_nested_tps_control_points",
             )
 
+    def test_failed_roundtrip_diagnostic_does_not_block_native_export(self):
+        with mock.patch.object(
+            renderer, "_save_and_verify_state_roundtrip",
+            side_effect=RuntimeError("serializer normalized state"),
+        ), mock.patch.object(
+            renderer, "_audit_native_inversion_settings",
+            return_value={"verified": True},
+        ):
+            roundtrip, inversion, warnings = renderer._collect_state_diagnostics(
+                mock.Mock(), Path("input.abba"), Path("output.abba")
+            )
+        self.assertFalse(roundtrip["verified"])
+        self.assertTrue(inversion["verified"])
+        self.assertIn("serializer normalized state", warnings[0])
+
 
 class NativeGridPlacementTests(unittest.TestCase):
     def test_bdv_transform_places_smaller_native_raster_on_target_grid(self):
