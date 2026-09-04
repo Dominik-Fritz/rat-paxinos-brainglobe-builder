@@ -187,6 +187,35 @@ class NativeGridPlacementTests(unittest.TestCase):
         np.testing.assert_allclose(result[0:2, 0:2, 0], 5.0)
         np.testing.assert_allclose(result[0:2, 0:2, 1], 15.0)
 
+    def test_ap_sampling_uses_one_native_section_without_brightness_blending(self):
+        import sys
+        import types
+        import numpy as np
+        class Transform:
+            values = [[0.04, 0.0, 0.0, 0.0], [0.0, 0.04, 0.0, 0.0],
+                      [0.0, 0.0, 0.04, 0.02]]
+            def get(self, row, column): return self.values[row][column]
+        fake_scyjava = types.SimpleNamespace(jimport=lambda name: Transform)
+        rai = mock.Mock()
+        rai.dimension.side_effect = [2, 2, 3]
+        source = mock.Mock()
+        source.getSource.return_value = rai
+        source.getSourceTransform.side_effect = lambda time, level, transform: None
+        sac = mock.Mock()
+        sac.getSpimSource.return_value = source
+        ij = mock.Mock()
+        payload = np.stack([
+            np.full((2, 2), 10, dtype=np.float32),
+            np.full((2, 2), 100, dtype=np.float32),
+            np.full((2, 2), 200, dtype=np.float32),
+        ])
+        ij.py.from_java.return_value = payload
+        with mock.patch.dict(sys.modules, {"scyjava": fake_scyjava}):
+            result = renderer._source_to_ap_si_lr(ij, sac)
+        # AP target 1 maps to native coordinate 0.5. Tie-breaking selects one
+        # complete section (index 1), never an artificial 55-intensity blend.
+        np.testing.assert_array_equal(result[1, :2, :2], payload[1])
+
     def test_target_world_origin_matches_vendored_scale_only_abba_map(self):
         self.assertEqual(renderer.TARGET_ORIGIN_XYZ_MM, (0.0, 0.0, 0.0))
         vendor = (Path(__file__).parents[1] / "vendor/abba_python_0_11_0/abba_map.py").read_text(encoding="utf-8")
@@ -218,6 +247,8 @@ class NativeGridPlacementTests(unittest.TestCase):
         vendor = (Path(__file__).parents[1] / "vendor/abba_python_0_11_0/abba.py").read_text(encoding="utf-8")
         self.assertIn("def wait_for_end_of_tasks(self):", vendor)
         self.assertIn("self.mp.waitForTasks()", vendor)
+        self.assertIn("margin_z=40.0", source)
+        self.assertIn("nearest_native_plane_no_inter_slice_intensity_blending", source)
 
 
 class FixedAtlasViewTests(unittest.TestCase):

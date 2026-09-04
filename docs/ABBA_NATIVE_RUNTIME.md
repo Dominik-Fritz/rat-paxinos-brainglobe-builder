@@ -98,7 +98,10 @@ a scale-only `AffineTransform3D`. Adding a guessed LR/SI centring translation
 moves the atlas centre to the lower-right corner and clips the registration;
 such a translation is forbidden. This grid conversion is plane-wise,
 uses constant-zero edges, and never rounds a fractional origin or reimplements
-the BigWarp TPS. Before export, native ABBA neighbour-matched slice thickness
+the BigWarp TPS. SI/LR are linearly interpolated within each already transformed
+section, but AP uses nearest-plane selection: adjacent histology sections are
+never intensity-blended. A 40-µm native Z margin keeps both sequence edges
+addressable. Before export, native ABBA neighbour-matched slice thickness
 is enabled because the serialized 1-µm section thickness would otherwise leave
 empty planes on a 40-µm output grid. Post-export diagnostics record every
 all-zero registered AP plane, but do not infer an I/O failure from intensity

@@ -271,26 +271,30 @@ def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
         )
 
     # Target voxel i is at its explicit atlas world origin + 0.04*i; source
-    # voxel j is at 0.04*j+translation.  Render one AP
-    # plane at a time to keep peak memory bounded and make interpolation and
-    # edge behaviour explicit.
+    # voxel j is at 0.04*j+translation. Registered histology sections are a
+    # discrete AP sequence: never blend neighbouring sections along AP. Select
+    # the nearest native Z plane, then interpolate only inside its SI/LR plane.
+    # The native export has one-voxel Z margins so the first and last registered
+    # section remain addressable after nearest-plane selection.
     from scipy.ndimage import affine_transform
     target = np.zeros(TARGET_SHAPE, dtype=source_ap_si_lr.dtype)
-    identity = np.eye(3, dtype=np.float64)
+    identity_2d = np.eye(2, dtype=np.float64)
     for ap in range(TARGET_SHAPE[0]):
-        offset = np.array([ap - starts[0], -starts[1], -starts[2]], dtype=np.float64)
+        source_ap = int(np.floor((ap - starts[0]) + 0.5))
+        if source_ap < 0 or source_ap >= source_ap_si_lr.shape[0]:
+            continue
         plane = affine_transform(
-            source_ap_si_lr,
-            identity,
-            offset=offset,
-            output_shape=(1, TARGET_SHAPE[1], TARGET_SHAPE[2]),
+            source_ap_si_lr[source_ap],
+            identity_2d,
+            offset=np.array([-starts[1], -starts[2]], dtype=np.float64),
+            output_shape=(TARGET_SHAPE[1], TARGET_SHAPE[2]),
             output=source_ap_si_lr.dtype,
             order=1,
             mode="constant",
             cval=0,
             prefilter=False,
         )
-        target[ap] = plane[0]
+        target[ap] = plane
     return target
 
 
@@ -389,7 +393,7 @@ def render_native(package_path: str) -> dict:
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
             downsample_x=1, downsample_y=1, downsample_z=1,
             image_name="native_abba_0.11_waxholm_nissl", interpolate=True,
-            margin_z=0.0, n_threads=max(1, min(8, os.cpu_count() or 1)),
+            margin_z=40.0, n_threads=max(1, min(8, os.cpu_count() or 1)),
             px_size_micron_x=40.0, px_size_micron_y=40.0, px_size_micron_z=40.0,
             resolution_levels=1,
         )
@@ -420,6 +424,8 @@ def render_native(package_path: str) -> dict:
             "target_shape_ap_si_lr": list(TARGET_SHAPE), "target_voxel_um": 40.0,
             "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
             "slice_thickness_policy": "native_match_neighbors_for_export",
+            "ap_sampling_policy": "nearest_native_plane_no_inter_slice_intensity_blending",
+            "native_export_margin_z_um": 40.0,
             "native_task_synchronization": "waitForTasks_after_state_load_and_thickness",
             "native_grid_diagnostics": grid_diagnostics,
             "source_plane_intensity_diagnostics": source_plane_diagnostics,
