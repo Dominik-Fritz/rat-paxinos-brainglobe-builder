@@ -35,15 +35,23 @@ def summarize(report: dict) -> dict:
         if before not in (None, 0) and after is not None:
             dark_ratios.append(float(after) / float(before))
     spatial = reconstruction.get("spatial_diagnostics", {})
+    ap_policy = reconstruction.get("ap_sampling_policy")
+    margin = reconstruction.get("native_export_margin_z_um")
+    current_sampling = (
+        ap_policy == "nearest_native_plane_no_inter_slice_intensity_blending"
+        and margin == 40.0
+    )
     return {
+        "diagnostic_schema_status": "current" if current_sampling else "predates_ap_sampling_fix",
+        "rerun_required_for_current_sampling": not current_sampling,
         "renderer_backend": reconstruction.get("renderer_backend"),
         "native_backend_verified": reconstruction.get("native_backend_verified"),
         "visual_parity_status": reconstruction.get("visual_parity_status"),
         "source_sha256": reconstruction.get("source", {}).get("sha256"),
         "abba_state_sha256": reconstruction.get("abba_state_sha256"),
         "native_grid_diagnostics": reconstruction.get("native_grid_diagnostics"),
-        "ap_sampling_policy": reconstruction.get("ap_sampling_policy"),
-        "native_export_margin_z_um": reconstruction.get("native_export_margin_z_um"),
+        "ap_sampling_policy": ap_policy,
+        "native_export_margin_z_um": margin,
         "source_blank_source_ids": source_blank,
         "output_blank_source_ids": output_blank,
         "output_blank_despite_nonblank_source_ids": lost,
