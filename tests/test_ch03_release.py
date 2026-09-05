@@ -86,6 +86,38 @@ class RegisteredStackTests(unittest.TestCase):
                     setattr(pipeline, name, value)
 
 
+class MultiAtlasTransactionTests(unittest.TestCase):
+    def test_later_target_failure_restores_every_earlier_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlases = [root / "atlas_a", root / "atlas_b"]
+            for atlas in atlases:
+                atlas.mkdir()
+                (atlas / "metadata.json").write_text("original", encoding="utf-8")
+                (atlas / "annotation.tiff").touch()
+                (atlas / "annotation.nii.gz").touch()
+            calls = 0
+            def activate(atlas, active, report):
+                nonlocal calls
+                calls += 1
+                (atlas / "metadata.json").write_text("changed", encoding="utf-8")
+                (atlas / "waxholm_anatomy_reference.tiff").write_text("partial", encoding="utf-8")
+                if calls == 2:
+                    raise OSError("second atlas activation failed")
+                return {"atlas": str(atlas)}
+            provenance = {"renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+                          "visual_parity_status": "pending"}
+            with mock.patch.object(pipeline, "atlas_candidates", return_value=atlases), \
+                    mock.patch.object(pipeline.tifffile, "imread", return_value=np.zeros((1,), dtype=np.uint16)), \
+                    mock.patch.object(pipeline, "_transactional_atlas_install", side_effect=activate), \
+                    mock.patch.object(pipeline, "REPORT_DIR", root / "reports"):
+                with self.assertRaisesRegex(OSError, "second atlas"):
+                    pipeline.install_channel(provenance)
+            for atlas in atlases:
+                self.assertEqual((atlas / "metadata.json").read_text(encoding="utf-8"), "original")
+                self.assertFalse((atlas / "waxholm_anatomy_reference.tiff").exists())
+
+
 class WaxholmSourceTests(unittest.TestCase):
     def manifest(self):
         return {
@@ -358,6 +390,9 @@ class BuildSummaryTests(unittest.TestCase):
                 "anterior_edge_policy": "duplicate_first_registered_plane",
                 "duplicated_anterior_target_ap": 0,
                 "unused_target_sequence_positions": {"before": 1, "after": 0},
+                "blank_registered_plane_count": 2,
+                "blank_registered_ap_indices": [162, 215],
+                "coverage_status": "review_required",
             },
         }}
         with tempfile.TemporaryDirectory() as temporary:
@@ -379,8 +414,286 @@ class BuildSummaryTests(unittest.TestCase):
             self.assertIn("Mapped Nissl planes: 588", summary)
             self.assertIn("Duplicated anterior target AP: 0", summary)
             self.assertIn("Nissl renderer backend: unverified_or_legacy", summary)
-            self.assertIn("Native ABBA parity verified: False", summary)
+            self.assertIn("Native backend verified: False", summary)
+            self.assertIn("Visual parity status: not_applicable", summary)
+            self.assertIn("Release eligible: False", summary)
+            self.assertIn("Native zero-valued registered planes: 2", summary)
+            self.assertIn("Native zero-valued AP indices: [162, 215]", summary)
+            self.assertIn("Native coverage status: review_required", summary)
             self.assertNotIn("not recorded", summary)
+
+
+class NativeStatusTests(unittest.TestCase):
+    def test_python_renderer_cannot_install(self):
+        with self.assertRaisesRegex(pipeline.NisslBuildError, "NISSL_INSTALL_UNVERIFIED"):
+            pipeline.validate_install_provenance({"renderer_backend": "experimental_python_tps"})
+
+    def test_native_pending_can_install_but_is_not_release_eligible(self):
+        parity, eligible = pipeline.validate_install_provenance({
+            "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+            "visual_parity_status": "pending"})
+        self.assertEqual(parity, "pending")
+        self.assertFalse(eligible)
+
+    def test_native_passed_is_release_eligible(self):
+        self.assertEqual(pipeline.validate_install_provenance({
+            "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
+            "visual_parity_status": "passed"}), ("passed", True))
+
+
+class NativeRuntimePolicyTests(unittest.TestCase):
+    def test_direct_vendor_layout_and_state_binding(self):
+        from src import native_abba_runtime as runtime
+        runtime.validate_vendor()
+        report = runtime.inspect_state(Path(__file__).parents[1] / "resources/optional_ch03/nissl_registration_0_3_0/final_for_V_0_3.abba")
+        self.assertEqual(report["source_id_range"], [0, 587])
+        self.assertEqual(report["waxholm_ap_range"], [189, 776])
+
+    def test_cache_paths_are_builder_local(self):
+        from src.native_abba_runtime import RuntimePaths
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = RuntimePaths(Path(temporary) / "native")
+            env = paths.environment()
+            self.assertTrue(all(str(Path(temporary)) in value for key, value in env.items() if key != "BRAINGLOBE_DIR"))
+
+    def test_jgo_repositories_are_explicit_and_builder_local(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            config = runtime.configure_jgo(paths)
+            text = config.read_text(encoding="utf-8")
+            self.assertEqual(config.parent, paths.maven_user_home)
+            self.assertIn("[repositories]", text)
+            self.assertIn("maven.scijava.org", text)
+            self.assertIn("artifacts.openmicroscopy.org", text)
+            env = paths.environment()
+            self.assertEqual(env["HOME"], str(paths.maven_user_home))
+            self.assertEqual(env["USERPROFILE"], str(paths.maven_user_home))
+
+    def test_maven_settings_force_ome_repository_for_jgo_subprocess(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            settings = runtime.configure_maven_settings(paths)
+            tree = runtime.ET.parse(settings)
+            namespace = {"m": "http://maven.apache.org/SETTINGS/1.2.0"}
+            repositories = {
+                item.find("m:id", namespace).text: item.find("m:url", namespace).text
+                for item in tree.findall(".//m:repository", namespace)
+            }
+            self.assertEqual(repositories, runtime.JGO_REPOSITORIES)
+            self.assertEqual(settings, paths.maven_settings)
+            self.assertIn(str(settings), paths.environment()["MAVEN_ARGS"])
+            active = tree.find(".//m:activeProfile", namespace)
+            self.assertEqual(active.text, "native-abba-repositories")
+
+    def test_maven_and_legacy_jgo_use_the_same_local_repository(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            self.assertEqual(
+                paths.maven_repository,
+                paths.maven_user_home / ".m2" / "repository",
+            )
+            self.assertIn(str(paths.maven_repository), paths.environment()["MAVEN_OPTS"])
+
+
+class NativeDependencyParityTests(unittest.TestCase):
+    def test_runtime_coordinates_match_vendor_except_documented_release_override(self):
+        import ast
+        from src import native_abba_runtime as runtime
+        tree = ast.parse((runtime.VENDOR / "abba.py").read_text(encoding="utf-8"))
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_java_dependencies")
+        returned = next(node.value for node in ast.walk(function) if isinstance(node, ast.Return))
+        vendor_dependencies = ast.literal_eval(returned)
+        self.assertEqual(list(runtime.VENDORED_JAVA_DEPENDENCIES), vendor_dependencies)
+        expected = list(vendor_dependencies)
+        expected[expected.index("net.imglib2:imglib2-realtransform:4.0.3")] = (
+            "net.imglib2:imglib2-realtransform:4.0.4"
+        )
+        self.assertEqual(list(runtime.JAVA_DEPENDENCIES), expected)
+        self.assertEqual(set(runtime.JAVA_DEPENDENCY_OVERRIDES), {
+            "net.imglib2:imglib2-realtransform"
+        })
+        self.assertIn("ch.epfl.biop.atlas.aligner.command.ABBAStateLoadCommand", runtime.REQUIRED_JAVA_CLASSES)
+        self.assertNotIn("ch.epfl.biop.atlas.aligner.command.ImportStdZipStateCommand", runtime.REQUIRED_JAVA_CLASSES)
+
+
+class PythonBridgeCompatibilityTests(unittest.TestCase):
+    def test_requirements_pin_jgo_api_compatible_with_pyimagej(self):
+        requirements = (Path(__file__).parents[1] / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("jgo==1.0.6", requirements)
+
+    def test_jgo_3_is_rejected_before_pyimagej_import(self):
+        from src import native_abba_runtime as runtime
+        versions = dict(runtime.PYTHON_BRIDGE_VERSIONS)
+        versions["jgo"] = "3.1.0"
+        with mock.patch.object(runtime.importlib.metadata, "version", side_effect=lambda name: versions[name]):
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "PYIMAGEJ_VERSION.*jgo==1.0.6"):
+                runtime.validate_python_bridge()
+
+    def test_pinned_bridge_requires_legacy_jgo_export(self):
+        from src import native_abba_runtime as runtime
+        with mock.patch.object(runtime.importlib.metadata, "version",
+                               side_effect=lambda name: runtime.PYTHON_BRIDGE_VERSIONS[name]), \
+                mock.patch.object(runtime.importlib, "import_module", return_value=object()):
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "PYIMAGEJ_API"):
+                runtime.validate_python_bridge()
+
+
+class NativeRuntimeInitializationTests(unittest.TestCase):
+    def test_missing_builder_java_is_classified(self):
+        from src.native_abba_runtime import NativeRuntimeError, RuntimePaths, validate_java
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(NativeRuntimeError, "JAVA_COMPONENT_MISSING"):
+                validate_java(RuntimePaths(Path(temporary)))
+
+    def test_native_api_initialization_uses_pinned_dependencies(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (paths.java / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "17.0.14+7"}), encoding="utf-8"
+            )
+            fake_imagej = mock.Mock()
+            fake_ij = mock.Mock()
+            fake_imagej.init.return_value = fake_ij
+            fake_scyjava = mock.Mock()
+            fake_scyjava.jimport.side_effect = lambda name: "class:" + name
+            real_import = runtime.importlib.import_module
+            def imported(name):
+                if name == "imagej": return fake_imagej
+                if name == "scyjava": return fake_scyjava
+                return real_import(name)
+            java_version = mock.Mock(returncode=0, stdout="", stderr='openjdk version "17.0.14"')
+            with mock.patch.object(runtime, "install_vendor_package"), \
+                    mock.patch.object(runtime, "validate_maven"), \
+                    mock.patch.object(runtime, "validate_python_bridge", return_value=dict(runtime.PYTHON_BRIDGE_VERSIONS)), \
+                    mock.patch.object(runtime.importlib, "import_module", side_effect=imported), \
+                    mock.patch.object(runtime.subprocess, "run", return_value=java_version):
+                ij, classes = runtime.initialize_native_api(paths)
+            self.assertIs(ij, fake_ij)
+            fake_imagej.init.assert_called_once_with(list(runtime.JAVA_DEPENDENCIES), mode="headless")
+            self.assertEqual(set(classes), set(runtime.REQUIRED_JAVA_CLASSES))
+
+    def test_missing_builder_maven_is_classified(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "MAVEN_COMPONENT_MISSING"):
+                runtime.validate_maven(runtime.RuntimePaths(Path(temporary)))
+
+    def test_wrong_maven_marker_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.maven_home / "bin" / ("mvn.cmd" if runtime.os.name == "nt" else "mvn")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            paths.maven.mkdir(parents=True, exist_ok=True)
+            (paths.maven / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "3.8.8"}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "MAVEN_VERSION"):
+                runtime.validate_maven(paths)
+
+    def test_pinned_builder_maven_is_accepted(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.maven_home / "bin" / ("mvn.cmd" if runtime.os.name == "nt" else "mvn")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            paths.maven.mkdir(parents=True, exist_ok=True)
+            (paths.maven / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "3.9.9"}), encoding="utf-8"
+            )
+            completed = mock.Mock(returncode=0, stdout="Apache Maven 3.9.9", stderr="")
+            with mock.patch.object(runtime.subprocess, "run", return_value=completed) as invoked:
+                self.assertEqual(runtime.validate_maven(paths), executable)
+            self.assertIn(str(executable), invoked.call_args.args[0])
+
+    def test_corrupt_java_marker_is_classified(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (paths.java / "runtime-manifest.json").write_text("not json", encoding="utf-8")
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "JAVA_CACHE_CORRUPT"):
+                runtime.validate_java(paths)
+
+    def test_wrong_java_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            executable = paths.java / "bin" / ("java.exe" if runtime.os.name == "nt" else "java")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            (paths.java / "runtime-manifest.json").write_text(
+                json.dumps({"pinned_version": "21.0.1+12"}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(runtime.NativeRuntimeError, "JAVA_VERSION"):
+                runtime.validate_java(paths)
+
+    def test_native_preflight_failure_is_persisted(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = runtime.RuntimePaths(Path(temporary))
+            try:
+                raise runtime.NativeRuntimeError("NATIVE_API_INITIALIZATION", "maven resolution failed")
+            except runtime.NativeRuntimeError as exc:
+                report_path = runtime.write_failure_report(paths, exc)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["error_code"], "NATIVE_API_INITIALIZATION")
+            self.assertIn("maven resolution failed", report["error_message"])
+            self.assertIn("NativeRuntimeError", report["traceback"])
+            self.assertFalse(report["native_backend_verified"])
+
+    def test_wrong_state_runtime_version_is_rejected(self):
+        from src import native_abba_runtime as runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "state.abba"
+            with zipfile.ZipFile(state_path, "w") as archive:
+                archive.writestr("sources.json", "[]")
+                archive.writestr("state.json", json.dumps({"version": "0.10.4"}))
+                archive.writestr("_bdvdataset_0.xml", "")
+            with mock.patch.object(runtime, "STATE_SHA256", runtime.sha256(state_path)):
+                with self.assertRaisesRegex(runtime.NativeRuntimeError, "RUNTIME_VERSION"):
+                    runtime.inspect_state(state_path)
+
+
+class FailedBuildSummaryTests(unittest.TestCase):
+    def test_failed_run_does_not_claim_preexisting_nissl_as_current(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atlas = root / "atlas"
+            atlas.mkdir()
+            (atlas / "annotation.tiff").touch()
+            (atlas / "waxholm_anatomy_reference.tiff").touch()
+            (atlas / "metadata.json").write_text(json.dumps({
+                "additional_references": ["waxholm_anatomy_reference"],
+                "optional_ch03_registration": {
+                    "renderer_backend": "native_abba_0.11",
+                    "native_backend_verified": True,
+                    "visual_parity_status": "passed",
+                    "release_eligible": True,
+                },
+            }), encoding="utf-8")
+            argv = ["write_build_summary.py", "--root", str(root), "--status", "failed",
+                    "--stage", "Paxinos source preflight", "--failure-exit-code", "2"]
+            with mock.patch.object(write_build_summary, "locate_installed_atlas", return_value=atlas), \
+                    mock.patch.object(sys, "argv", argv):
+                self.assertEqual(write_build_summary.main(), 0)
+            summary = (root / "reports/BUILD_SUMMARY.txt").read_text(encoding="utf-8")
+            self.assertIn("Failure exit code: 2", summary)
+            self.assertIn("pre-existing; not validated by this failed build", summary)
+            self.assertIn("Nissl renderer backend: not produced by failed build", summary)
+            self.assertIn("Native backend verified: False", summary)
+            self.assertNotIn("Native ABBA 0.11 backend execution is verified", summary)
 
 
 if __name__ == "__main__":
