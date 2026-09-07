@@ -1,0 +1,182 @@
+# Builder-local native ABBA runtime
+
+The authoritative registration is `final_for_V_0_3.abba`, SHA-256
+`e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`.
+The vendored package contents live directly in `vendor/abba_python_0_11_0`.
+
+`run_builder.bat` installs Eclipse Temurin JDK `17.0.14+7` below
+`data/native_abba_runtime/java`. `bootstrap_native_java.ps1` obtains the
+version-specific asset metadata from the Eclipse Adoptium API, verifies the
+archive against the publisher's SHA-256 before extraction, and writes the URL
+and observed hash to `runtime-manifest.json`. A mismatching marker, archive, or
+Java layout is rejected rather than repaired using a global Java installation.
+
+The Java dependency resolver also requires a Maven executable. The builder
+therefore installs Apache Maven `3.9.9` below
+`data/native_abba_runtime/maven`, verifies the downloaded archive against the
+publisher's SHA-512, and confines both Maven's user home and artifact repository
+to `data/native_abba_runtime`. Neither `PATH` nor the user's `.m2` directory is
+used as a fallback. Missing, corrupt, and wrong-version Maven runtimes are
+reported separately.
+
+Legacy jgo also reads repository definitions from `~/.jgo.rc`. The runtime
+redirects both `HOME` and `USERPROFILE` to its builder-local user directory and
+writes an explicit repository list there. Besides SciJava Public this includes
+the Open Microscopy Environment repository required by the pinned Bio-Formats
+and OMERO transitive dependencies. The Maven bootstrap itself sets
+`JAVA_HOME` to the builder-local Temurin runtime before executing `mvn.cmd`, so
+an older globally installed Java cannot be selected.
+
+Because legacy jgo does not consistently forward `.jgo.rc` repositories to its
+Windows Maven subprocess, the same repository allowlist is also written to a
+builder-local Maven `settings.xml`. `MAVEN_ARGS` forces every Maven 3.9 command
+to use that exact file. This is the authoritative fix for the Bio-Formats and
+OMERO artifacts that are not published in Maven Central.
+
+The Maven local repository deliberately remains at
+`maven_user_home/.m2/repository`. Legacy jgo computes dependency source paths
+from that conventional location. Maven and jgo must therefore share this exact
+directory; redirecting Maven to a sibling cache makes jgo look for successfully
+downloaded JARs at the wrong path on Windows.
+
+ABBA 0.11.0 initializes PyImageJ from the Maven coordinates recorded by the
+vendored `Abba.get_java_dependencies()`, with one explicit compatibility
+correction: that helper requests `imglib2-realtransform` 4.0.3, while the
+released ABBA-Python 0.11.0 Fiji runtime ships 4.0.4. The builder therefore
+uses 4.0.4 and records both coordinates and the override in every preflight and
+reconstruction report. This distinction is scientifically relevant because
+that library evaluates the serialized TPS and iterative inverse. No other
+coordinate is changed. The preflight resolves the actual
+Java classes used by the vendor for ABBA startup, state loading, moving-source
+import, native BDV export, SourceAndConverter handling, and BigWarp TPS. Java,
+JGO, Maven, ImageJ, BrainGlobe, downloads, and temporary data use only
+builder-local paths. The historical QuPath path is detected but never used.
+
+The old TIFF stack is comparison-only. The Python TPS implementation remains
+diagnostic-only and cannot install Ch03. A native test installation records
+`visual_parity_status: pending` and `release_eligible: false`; only a separate
+visual acceptance may change those fields to `passed` and `true`.
+Because Ch03 is non-authoritative, a renderer failure leaves the already
+installed Paxinos annotation atlas intact and completes with warnings. Passing
+`--nissl-required` changes this policy to a hard build failure for explicit
+release/integration runs.
+
+The uploaded vendor directory contains no upstream `METADATA`, `dist-info`, or
+license file. It is therefore retained as source provenance only; this
+repository does not infer additional redistribution rights from its presence.
+
+## Native rendering path
+
+`native_abba_renderer.py` materializes the 588 required Waxholm planes only in
+the builder-local temporary directory. It rewrites all 998 historical loader
+entries to local Bio-Formats TIFF openers and binds `sources.json` viewsetups
+197–784 explicitly to source IDs 0–587 / Waxholm AP 189–776. `sources.json`,
+`state.json`, every BDV view registration, and every ABBA action are otherwise
+preserved. The rewritten archive contains no historical QuPath path.
+
+ABBA loads that portable archive through its vendored `state_load` API and
+`ABBAStateLoadCommand`. The similarly named `ImportStdZipStateCommand` is not
+used: it consumes the separate standardized interchange format and requires a
+`meta.json` member which the authoritative three-member `.abba` project does
+not contain.
+The renderer requires 588 Java slices, calls the vendored
+`ExportResampledSlicesToBDVSourceCommand` at an explicit 40-µm isotropic grid,
+and discovers its output by the Java `SourceAndConverter` type rather than by a
+guessed command-output name. Only that native BDV result can set
+`native_backend_verified: true`; it is installed with visual parity `pending`
+and remains non-release-eligible until manual acceptance.
+
+### Audited native-state and grid handling
+
+The `.abba` ZIP is loaded with the vendored `ABBAStateLoadCommand`; successful
+completion and exactly 588 restored slices are required before export. State
+loading can enqueue `MoveSliceAction` and `RegisterSliceAction` work after the
+command returns, so the renderer calls ABBA 0.11's `waitForTasks()` synchronization
+API before inspecting/exporting slices and again after changing export thickness.
+Exporting merely after 588 `CreateSliceAction` results exist is forbidden because
+it races native BigWarp restoration and can produce unregistered, distorted, or
+blank sections. The
+complete Maven coordinate list otherwise remains identical to vendored
+`get_java_dependencies()`, including its N5 modules.
+
+After the task barrier, the renderer saves the loaded project again through the
+vendored `state_save` API and compares canonical SHA-256 fingerprints of the
+registration type and nested TPS control-point mapping in all 588 serialized
+`RegisterSliceAction` transforms with the authoritative input. The outer
+`BoundedRealTransform` interval is intentionally excluded from equality: it is
+derived from the moving source and is legitimately rewritten when the historic
+QuPath source is rebound to a Bio-Formats TIFF; realtransform 4.0.4 may also
+normalize wrapper JSON. Treating that expected envelope change as a scientific
+transform change caused the previous false `NATIVE_TRANSFORM_ROUNDTRIP` failure.
+The report counts such wrapper changes separately. A missing, changed,
+reordered, or dropped TPS mapping is reported as an inconclusive
+`NATIVE_TRANSFORM_ROUNDTRIP` audit; the renderer never substitutes that saved
+copy, a plugin, or a newly calculated transform.
+
+The persistent saved state is written to
+`reports/native_abba/native_state_roundtrip.abba`, and the per-source numerical
+comparison is always written to
+`reports/native_abba/transform_roundtrip_diff.json`. The diff contains both
+intervals, the complete transform type chain, landmark shapes and maximum
+absolute `srcPts`/`tgtPts` deltas. A genuine deformation mismatch remains a
+hard error; an unavailable optimizer-settings accessor is diagnostic-only. The
+authoritative input ZIP remains hash-checked, and the saved copy is never used
+for rendering. `v34_debug_transform_roundtrip.py <package>` runs only native
+initialization, state load/save and this diff so the evidence can be collected
+without another complete atlas build.
+
+The renderer also reads `getTolerance()` and `getMaxIteration()` from all 588
+loaded ABBA `SliceSources`, rejects invalid values, and records the distinct
+settings. This matters because ABBA 0.11's serialized iterative-inverse wrapper
+does not separately persist those optimizer settings. Matching the 4.0.4
+release runtime and auditing the resulting values avoids silently treating a
+different library default as equivalent to the installer that created the
+validated display.
+
+The native BDV output transform must be axis-aligned at exactly 0.04 mm. ABBA
+may crop its export at a half-voxel origin, so the renderer uses the complete
+Java source transform to linearly resample that already natively transformed
+raster onto the 608×286×409 AP/SI/LR voxel centres. The saved registrations use
+a centred BigWarp canvas (`px=-9.4`, `py=-6.56`, with bounds approximately
+±9.407/±6.578 mm). A scale-only BrainGlobe Source instead placed the entire
+fixed atlas in positive LR/SI world coordinates. That made much of the target
+fall outside each `BoundedRealTransform`, explaining both the systematic right
+shift and fully invisible sections. The runtime now centres the target voxel
+centres at LR/SI zero: origin `(-8.16, -5.70, 0)` mm. The identical origin is
+applied both to the fixed ABBA Source and to post-export sampling; changing only
+one of those frames recreates the earlier clipping error. This grid conversion is plane-wise,
+uses constant-zero edges, and never rounds a fractional origin or reimplements
+the BigWarp TPS. SI/LR are linearly interpolated within each already transformed
+section, but AP uses nearest-plane selection: adjacent histology sections are
+never intensity-blended. A 40-µm native Z margin keeps both sequence edges
+addressable. Before export, native ABBA neighbour-matched slice thickness
+is enabled because the serialized 1-µm section thickness would otherwise leave
+empty planes on a 40-µm output grid. Post-export diagnostics record every
+all-zero registered AP plane, but do not infer an I/O failure from intensity
+values: zero is valid image background. Such planes remain unchanged and are
+flagged for visual review; they are never filled synthetically, and this
+diagnostic does not block the native test installation needed for that review. The
+fixed runtime atlas view exposes the already validated AP/SI/LR arrays to ABBA
+as `asr` without permuting or modifying the installed atlas data or metadata.
+
+The reconstruction report records the native BDV array shape, complete
+SourceTransform, calculated AP/SI/LR placement, and per-plane source/output
+intensity statistics (`dtype`, minimum, maximum, mean, non-zero count and
+non-zero mean). This distinguishes an absent native output plane from a present
+but dark input plane. Intensities are preserved exactly; the renderer performs
+no per-slice normalization, histogram matching, or brightness compensation.
+Because the full per-plane JSON is large, every successful builder run also
+writes `reports/native_abba/native_diagnostics_summary.txt` and `.json`. These
+compact files identify source-native gaps versus export losses, summarize
+output/source intensity ratios, preserve the complete native grid transform,
+and report the median SI/LR signal-to-label centroid offset without applying an
+automatic alignment correction.
+
+### Python bridge compatibility
+
+PyImageJ 1.5.0 and ScyJava 1.10.2 use the legacy `from jgo import jgo`
+interface. Therefore `jgo==1.0.6` is pinned explicitly; jgo 3.x is not API
+compatible with this bridge. Runtime preflight verifies all four distribution
+versions and the `jgo` export before importing PyImageJ, so a transitive upgrade
+is reported as `PYIMAGEJ_VERSION` or `PYIMAGEJ_API` rather than an opaque import
+failure.
