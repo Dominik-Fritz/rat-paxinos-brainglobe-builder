@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Resolve the immutable Nissl registration package used by the atlas build.
 
-Large registration products are distributed as a versioned GitHub release
-asset rather than committed to the source tree. Resolution is deterministic:
-an explicitly configured package wins, followed by an embedded test package,
-a verified cached release asset, and finally the published asset URL.
+The small immutable ABBA state is committed.  The legacy pre-rendered stack is
+never resolved or downloaded by the normal builder.
 """
 from __future__ import annotations
 
@@ -36,7 +34,7 @@ def load_manifest(root: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Nissl release manifest is missing: {path}")
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    for key in ("release", "asset_name", "expected_registered_stack"):
+    for key in ("release", "expected_abba_state", "expected_abba_sha256"):
         if not str(manifest.get(key, "")).strip():
             raise ValueError(f"Nissl release manifest has no {key!r}: {path}")
     return manifest
@@ -45,17 +43,13 @@ def load_manifest(root: Path) -> dict:
 def validate_package(package: Path, manifest: dict) -> tuple[bool, str]:
     if not package.is_dir():
         return False, "not a directory"
-    stack_name = manifest["expected_registered_stack"].lower()
-    stacks = [p for p in package.rglob("*") if p.is_file() and p.name.lower() == stack_name]
-    states = [p for p in package.rglob("*.abba") if p.is_file()]
+    states = [p for p in package.rglob("*.abba") if p.is_file() and p.name == manifest["expected_abba_state"]]
     runtime_manifest = package / "registration_manifest.json"
-    if len(stacks) != 1:
-        return False, f"expected one {manifest['expected_registered_stack']}, found {len(stacks)}"
-    if not states:
-        return False, "no ABBA state file found"
+    if len(states) != 1 or sha256_file(states[0]) != manifest["expected_abba_sha256"]:
+        return False, "the unique ABBA state is missing or has the wrong SHA-256"
     if not runtime_manifest.is_file():
         return False, "registration_manifest.json not found"
-    return True, "runtime manifest, registration stack, and ABBA state found"
+    return True, "runtime manifest and immutable ABBA state found (legacy stack not used)"
 
 
 def safe_extract(zip_path: Path, destination: Path) -> None:

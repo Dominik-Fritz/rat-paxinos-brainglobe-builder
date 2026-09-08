@@ -120,11 +120,65 @@ positions 1 through 588. Because no separately registered anterior edge image
 exists, position zero displays a documented duplicate of the nearest registered
 section. No interpolation or new registration is performed.
 
-The ImageJ export has the shape `(588, 656, 940)` at an in-plane calibration of
-19.5 µm. The atlas TIFF grid is `(608, 286, 409)` in AP/SI/LR order at 40 µm.
-The importer samples the centered physical ImageJ canvas onto the Paxinos grid.
-This is a calibrated grid conversion, not a new anatomical registration; the
-manually defined BigWarp transformations remain unchanged.
+Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
+`e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`) is the
+authoritative registration input. The builder strictly validates its 588
+sources, action chains and ThinplateSpline transforms, then feeds them the
+moving images the registration was actually created against: the 588 pinned
+planes in `resources\optional_ch03\whs_nissl_slices_paxinos_40um_ap\`, each
+verified against its SHA-256 in `whs_nissl_slices_manifest.json` and scaled
+from UINT8 to UINT16 by the single constant factor 257.
+
+These planes are a Waxholm export that had already been resampled onto the
+Paxinos 40 um AP grid; the QuPath project of the saved state points at exactly
+this set. Re-deriving them from the raw 39 um `whs_sd_rat_39um` reference volume
+is **not** equivalent — measured against the pinned files such a re-derivation
+is displaced by 22-25 voxels in LR, and that reproduced as a ~880 um lateral
+offset in the built atlas. The displacement is not constant across AP, so it
+cannot be corrected arithmetically. The BrainGlobe Waxholm package is therefore
+no longer read by the native path at all; its identifiers survive in the
+manifest as provenance only, and no download is required.
+
+The channel is reconstructed directly on the `(608, 286, 409)` AP/SI/LR grid.
+The historical
+`registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
+normal build inputs or silent fallbacks; they may only be supplied separately
+for numerical/visual v0.3.0 comparison.
+
+The renderer applies the embedded BDV pixel-to-world affine for every source
+and numerically inverts the actual forward BigWarp thin-plate spline. Merely
+fitting a second spline with exchanged source/target landmarks is not treated
+as the inverse, because that changes nonlinear registrations. Target and source
+pixel origins follow BDV's `-size * spacing / 2` convention.
+The inverse is evaluated in bounded chunks with per-pixel convergence. Rare
+boundary pixels for which the curated forward TPS has no numerically valid
+inverse are sampled with the documented constant-zero boundary policy and
+listed per source/AP plane in the reconstruction report; converged pixels are
+never discarded merely because a different pixel in the same plane fails.
+
+The confirmed `+1` target offset is an offset within the 589 non-empty Paxinos
+label planes, not an absolute volume index. The 588 registrations are therefore
+written to `nonempty_ap[1:589]`, and `nonempty_ap[0]` receives the documented
+anterior duplicate. Empty leading/trailing AP planes in the 608-plane container
+must not shift the registered anatomy.
+
+## Native ABBA parity gate
+
+An ABBA state is not a self-contained rendered registration project: this
+archive contains the moving-source BDV affine and BigWarp landmarks, but the
+fixed Paxinos `SourceAndConverter` transform was supplied externally when the
+session was opened, and the archive contains no hashes of the original Nissl
+pixels. Consequently, the normal release build now stops with
+`ABBA_NATIVE_PARITY_REQUIRED` rather than silently treating the independent
+Python TPS implementation as scientifically identical. A development-only
+`--experimental-python-render` switch remains for diagnostics; `run_builder.bat`
+does not enable it. Release rendering must use ABBA 0.11/BigWarp's native Java
+transform stack and pass the separate v0.3.0 numerical and visual comparison.
+Defense in depth also prevents `install_channel` from accepting any output
+unless its provenance states `renderer_backend=native_abba_0.11` and
+`native_parity_verified=true`. The experimental renderer writes diagnostics
+only; it cannot install or package Ch03. BUILD_SUMMARY exposes both fields so a
+pre-gate or stale installed channel cannot be mistaken for native output.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
@@ -147,13 +201,12 @@ Consequently:
 - Ch. 3 is an orientation and visualization aid.
 - Paxinos labels remain authoritative for region assignment.
 - Nissl boundaries must not be interpreted as replacement region boundaries.
-- The source images, ABBA state, transform exports, ImageJ stack, checksums, and
+- The source images, ABBA state, transform reports, checksums, and
   build reports form the registration provenance record.
 
 ## Reproducible GitHub release asset
 
-The complete ABBA/QuPath package is too large for normal Git history. It is
-distributed as a GitHub release asset and described by:
+The compact immutable ABBA ZIP is committed and described by:
 
 ```text
 resources\optional_ch03\nissl_release_asset.json
@@ -165,7 +218,7 @@ The manifest pins:
 - asset filename;
 - direct release download URL;
 - SHA-256 checksum;
-- expected stack filename, shape, and AP order.
+- exact ABBA filename/hash, source range, AP direction and edge policy.
 
 The builder stores verified downloads under:
 
@@ -173,9 +226,16 @@ The builder stores verified downloads under:
 data\release_assets\0.3.0-prerelease\
 ```
 
-A partial or checksum-mismatched download is rejected. ZIP extraction is also
-checked for unsafe paths. A package is accepted only if it contains exactly one
-registered ImageJ stack and at least one ABBA state file.
+A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
+wrong source mapping, a pinned moving plane whose SHA-256 does not match, or
+ambiguous AP direction aborts the build. The historical BDV `project.qpproj`
+path is retained as provenance only and is never opened.
+
+Phase 5 needs no network access and no BrainGlobe Waxholm download: the moving
+planes ship with the repository and are hash-verified before use. A missing
+plane or manifest fails with `MOVING_PLANES_MISSING`, a modified plane with
+`MOVING_PLANES_CORRUPT`, so a changed input stops the build instead of silently
+altering the registered result.
 
 ### Preparing the release asset
 
@@ -302,3 +362,59 @@ The 0.3.0 prerelease is ready for publication only after:
 5. Ch. 0 and Ch. 3 have the same AP direction;
 6. representative levels pass visual ABBA QC;
 7. `reports\BUILD_SUMMARY.txt` reports success.
+
+## v0.3.1 incremental test build
+
+Version 0.3.1 deliberately starts from the working 0.3.0 prerelease pipeline.
+It does not change the Paxinos annotation, ontology, AP mapping, or validated
+Nissl registration. This first increment only fixes optional-component control:
+`--no-patch-abba` disables both ABBA patches, missing ABBA is a warning unless
+`--require-abba` is supplied, `--without-nissl` is reported accurately, and
+`--non-interactive` suppresses `pause`. Broader preflight, transaction, locking,
+and dependency changes are intentionally deferred until this smaller Windows
+build has been validated.
+
+### v0.3.1 next safety increment
+
+The builder reports free space separately for the volume containing the project,
+the configured BrainGlobe installation, and Windows temporary directories. Low
+space is initially a warning; only a critically full volume stops the build.
+Duplicate volumes are reported once with all of their roles.
+
+The Nissl importer now records per-plane edge-coverage diagnostics comparing the
+non-zero registered signal with the Paxinos label bounds. It does not stretch,
+fill, or re-register the validated images. Installed metadata includes a preferred
+warm-yellow (`#FFD54F`), low-opacity (`0.22`) display hint. This is deliberately a
+client hint: current ABBA versions may still require the converter color and
+opacity to be applied in the ABBA UI until a separately tested loader patch is
+available.
+
+Repeated clean installations no longer accumulate full atlas backups inside the
+BrainGlobe directory (usually on `C:`). Existing and newly created native-atlas
+backups are moved, never deleted, under `backups/native_brainglobe` on the builder
+volume. This preserves rollback material while freeing the installation volume
+for the new atlas and its display channels.
+
+The large per-plane Nissl diagnostic can be reduced to a small text file with:
+
+```cmd
+.venv\Scripts\python.exe src\summarize_nissl_coverage.py --root .
+```
+
+Share `reports\ch03_nissl\NISSL_EDGE_COVERAGE_SUMMARY.txt`; the full JSON is not
+needed for initial edge-gap analysis.
+
+A critically full required volume (below 0.5 GiB) still stops the build to avoid
+partial atlas files. Before this check, legacy full-atlas backups are now moved
+from the BrainGlobe directory to the builder-volume backup tree. If Windows
+`TEMP` remains on a full `C:` drive, it can be redirected for one terminal:
+
+```cmd
+mkdir G:\paxinos_temp
+set "TEMP=G:\paxinos_temp"
+set "TMP=G:\paxinos_temp"
+run_builder.bat
+```
+
+The BrainGlobe installation itself still needs sufficient free space on its
+configured volume; redirecting only `TEMP` does not move the installed atlas.
