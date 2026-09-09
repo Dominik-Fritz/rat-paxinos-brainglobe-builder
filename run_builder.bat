@@ -8,17 +8,26 @@ set "BUILDER_ROOT=%~dp0."
 set "BUILD_STARTED=%DATE% %TIME%"
 set "CURRENT_STAGE=Startup"
 
-echo.
-echo +======================================================================+
-echo ^|                                                                      ^|
-echo ^|              RAT PAXINOS / WATSON ATLAS BUILDER                     ^|
-echo ^|                         0.3.1 TEST BUILD                             ^|
-echo ^|                                                                      ^|
-echo +======================================================================+
-echo.
-echo   Build target : paxinos_watson_rat_40um
-echo   Components   : Paxinos labels + registered WHS Nissl reference
-echo   Started      : %BUILD_STARTED%
+rem Console colour. Falls back to plain text when the terminal has no VT support.
+set "ESC="
+for /F %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
+set "C_RESET=" & set "C_HEAD=" & set "C_OK=" & set "C_WARN=" & set "C_ERR=" & set "C_DIM=" & set "C_KEY="
+if defined ESC (
+    set "C_RESET=%ESC%[0m"
+    set "C_HEAD=%ESC%[96m"
+    set "C_OK=%ESC%[92m"
+    set "C_WARN=%ESC%[93m"
+    set "C_ERR=%ESC%[91m"
+    set "C_DIM=%ESC%[90m"
+    set "C_KEY=%ESC%[97m"
+)
+set "SPC=                                                                                "
+set "RC="
+
+call :banner
+call :kv "Build target" "paxinos_watson_rat_40um"
+call :kv "Components" "Paxinos labels + registered WHS Nissl reference"
+call :kv "Started" "%BUILD_STARTED%"
 echo.
 
 set "PY_EXE="
@@ -350,24 +359,29 @@ set "FINAL_STATUS=success"
 if /I "%BUILD_WARNINGS%"=="YES" set "FINAL_STATUS=warnings"
 "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status "%FINAL_STATUS%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" || goto fail
 echo.
-echo +======================================================================+
-echo ^|  [OK] Atlas package generated                                       ^|
-echo ^|  [OK] Paxinos annotation installed                                  ^|
-if /I "%WITH_NISSL%"=="YES" echo ^|  [OK] Registered WHS/Nissl reference installed                      ^|
-if /I "%WITH_NISSL%"=="NO" echo ^|  [--] Registered WHS/Nissl reference disabled                       ^|
-if /I "%WITH_NISSL%"=="FAILED" echo ^|  [!!] Optional WHS/Nissl reference failed; atlas retained             ^|
-if /I "%PATCH_ABBA%"=="NO" echo ^|  [--] ABBA patches disabled                                          ^|
-if /I "%PATCH_ABBA%"=="YES" if /I "%BUILD_WARNINGS%"=="NO" echo ^|  [OK] ABBA integration completed                                    ^|
-if /I "%BUILD_WARNINGS%"=="YES" echo ^|  [!!] Build completed with warnings                                ^|
-echo +======================================================================+
-if /I "%BUILD_WARNINGS%"=="YES" (echo ^| BUILD SUCCESSFUL WITH WARNINGS                                   ^|) else (echo ^| BUILD SUCCESSFUL                                                     ^|)
-echo +======================================================================+
-echo   Atlas   : paxinos_watson_rat_40um
-if /I "%WITH_NISSL%"=="YES" echo   Result  : Paxinos annotation and registered Nissl channel installed
-if /I "%WITH_NISSL%"=="NO" echo   Result  : Paxinos annotation installed; Nissl explicitly disabled
-if /I "%WITH_NISSL%"=="FAILED" echo   Result  : Paxinos annotation installed; optional Nissl build failed
-echo   Reports : %BUILDER_ROOT%\reports
-echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
+set "BANNER_COLOUR=%C_OK%"
+if /I "%BUILD_WARNINGS%"=="YES" set "BANNER_COLOUR=%C_WARN%"
+call :rule "=" "%BANNER_COLOUR%"
+set "RC=%C_OK%" & call :row "  [OK]    Atlas package generated"
+set "RC=%C_OK%" & call :row "  [OK]    Paxinos annotation installed"
+if /I "%WITH_NISSL%"=="YES" (set "RC=%C_OK%" & call :row "  [OK]    Registered WHS/Nissl reference installed")
+if /I "%WITH_NISSL%"=="NO" (set "RC=%C_DIM%" & call :row "  [SKIP]  Registered WHS/Nissl reference disabled")
+if /I "%WITH_NISSL%"=="FAILED" (set "RC=%C_WARN%" & call :row "  [WARN]  Optional WHS/Nissl reference failed; atlas retained")
+if /I "%PATCH_ABBA%"=="NO" (set "RC=%C_DIM%" & call :row "  [SKIP]  ABBA patches disabled")
+if /I "%PATCH_ABBA%"=="YES" if /I "%BUILD_WARNINGS%"=="NO" (set "RC=%C_OK%" & call :row "  [OK]    ABBA integration completed")
+if /I "%BUILD_WARNINGS%"=="YES" (set "RC=%C_WARN%" & call :row "  [WARN]  Build completed with warnings")
+call :rule "=" "%BANNER_COLOUR%"
+set "RC=%BANNER_COLOUR%"
+if /I "%BUILD_WARNINGS%"=="YES" (call :row "  BUILD SUCCESSFUL WITH WARNINGS") else (call :row "  BUILD SUCCESSFUL")
+call :rule "=" "%BANNER_COLOUR%"
+set "RC="
+echo.
+call :kv "Atlas" "paxinos_watson_rat_40um"
+if /I "%WITH_NISSL%"=="YES" call :kv "Result" "Paxinos annotation and registered Nissl channel installed"
+if /I "%WITH_NISSL%"=="NO" call :kv "Result" "Paxinos annotation installed; Nissl explicitly disabled"
+if /I "%WITH_NISSL%"=="FAILED" call :kv "Result" "Paxinos annotation installed; optional Nissl build failed"
+call :kv "Reports" "%BUILDER_ROOT%\reports"
+call :kv "Summary" "%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt"
 echo.
 if /I "%NON_INTERACTIVE%"=="NO" pause
 endlocal
@@ -425,10 +439,54 @@ exit /b 0
 :phase
 set "CURRENT_STAGE=%~2"
 echo.
-echo +----------------------------------------------------------------------+
-echo ^| PHASE %~1                                                            ^|
-echo ^| %~2
-echo +----------------------------------------------------------------------+
+call :rule "-" "%C_HEAD%"
+set "RC=%C_HEAD%" & call :row "  PHASE %~1   %~2"
+call :rule "-" "%C_HEAD%"
+set "RC="
+exit /b 0
+
+
+:rule
+rem %1 = fill character, %2 = colour
+setlocal EnableDelayedExpansion
+set "F=%~1%~1%~1%~1%~1%~1%~1%~1%~1%~1"
+set "L=!F!!F!!F!!F!!F!!F!!F!"
+echo(%~2+!L:~0,70!+%C_RESET%
+endlocal & exit /b 0
+
+
+:row
+rem %1 = text, RC = optional colour set by the caller
+setlocal EnableDelayedExpansion
+set "T=%~1%SPC%"
+echo(%RC%^|!T:~0,70!^|%C_RESET%
+endlocal & exit /b 0
+
+
+:kv
+rem %1 = label, %2 = value
+setlocal EnableDelayedExpansion
+set "K=%~1%SPC%"
+echo(   %C_DIM%!K:~0,15!%C_RESET%%C_KEY%%~2%C_RESET%
+endlocal & exit /b 0
+
+
+:banner
+echo.
+call :rule "=" "%C_HEAD%"
+set "RC=%C_HEAD%"
+call :row ""
+call :row "            .-~~~~~-."
+call :row "          .'  o   o  '.         RAT PAXINOS / WATSON"
+call :row "         /   \  ---  /   \        BrainGlobe atlas builder"
+call :row "        |     '-----'     |       for Fiji / ABBA"
+call :row "         \   .-------.   /"
+call :row "          '-._________.-'"
+call :row ""
+call :row "        v0.3.1 prerelease      paxinos_watson_rat_40um"
+call :row ""
+call :rule "=" "%C_HEAD%"
+set "RC="
 exit /b 0
 
 
@@ -462,12 +520,15 @@ if not exist "%BUILDER_ROOT%\reports" mkdir "%BUILDER_ROOT%\reports"
 >>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Last stage: %CURRENT_STAGE%
 >>"%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt" echo Started: %BUILD_STARTED%
 if defined VENV_PY if exist "%VENV_PY%" "%VENV_PY%" "src\write_build_summary.py" --root "%BUILDER_ROOT%" --status failed --stage "%CURRENT_STAGE%" --started "%BUILD_STARTED%" --nissl "%WITH_NISSL%" --abba-patch "%PATCH_ABBA%" --failure-exit-code "%FAILURE_EXIT_CODE%"
-echo +======================================================================+
-echo ^| BUILD FAILED                                                         ^|
-echo +======================================================================+
-echo   Stage   : %CURRENT_STAGE%
-echo   Reports : %BUILDER_ROOT%\reports
-echo   Summary : %BUILDER_ROOT%\reports\BUILD_SUMMARY.txt
+call :rule "=" "%C_ERR%"
+set "RC=%C_ERR%" & call :row "  BUILD FAILED"
+call :rule "=" "%C_ERR%"
+set "RC="
+echo.
+call :kv "Stage" "%CURRENT_STAGE%"
+call :kv "Exit code" "%FAILURE_EXIT_CODE%"
+call :kv "Reports" "%BUILDER_ROOT%\reports"
+call :kv "Summary" "%BUILDER_ROOT%\reports\BUILD_SUMMARY.txt"
 echo.
 if /I "%NON_INTERACTIVE%"=="NO" pause
 exit /b 1
