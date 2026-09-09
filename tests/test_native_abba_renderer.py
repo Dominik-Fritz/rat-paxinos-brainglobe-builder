@@ -539,6 +539,37 @@ class PinnedMovingPlaneTests(unittest.TestCase):
         self.assertIn("MOVING_PLANE_DIR", materialize)
 
 
+class OutputHashTests(unittest.TestCase):
+    def test_report_records_a_container_free_content_hash(self):
+        # output_sha256 hashes the TIFF file, so it cannot answer whether two
+        # runs produced the same voxels; comparing it against a voxel hash once
+        # produced a false non-reproducibility result.
+        source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"output_content_sha256"', source)
+        self.assertIn("np.ascontiguousarray(native_volume).tobytes()", source)
+        summary = (Path(__file__).parents[1] / "src/summarize_native_abba_diagnostics.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("output_content_sha256", summary)
+
+    def test_content_hash_ignores_the_container_but_tracks_the_voxels(self):
+        import hashlib
+        import numpy as np
+        volume = np.arange(24, dtype=np.uint16).reshape(2, 3, 4)
+        digest = hashlib.sha256(np.ascontiguousarray(volume).tobytes()).hexdigest()
+        # A transposed view with identical values must still hash identically
+        # once made contiguous in the reported AP/SI/LR order.
+        same = np.array(volume)
+        self.assertEqual(
+            hashlib.sha256(np.ascontiguousarray(same).tobytes()).hexdigest(), digest)
+        changed = volume.copy()
+        changed[0, 0, 0] += 1
+        self.assertNotEqual(
+            hashlib.sha256(np.ascontiguousarray(changed).tobytes()).hexdigest(), digest)
+
+
 class AlignmentGuardTests(unittest.TestCase):
     """Measure lateral drift every build; never silently correct it."""
 

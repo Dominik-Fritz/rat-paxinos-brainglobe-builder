@@ -62,6 +62,9 @@ def summarize(report: dict) -> dict:
         "native_backend_verified": reconstruction.get("native_backend_verified"),
         "visual_parity_status": reconstruction.get("visual_parity_status"),
         "source_sha256": reconstruction.get("source", {}).get("sha256"),
+        # Compare this between runs to judge reproducibility; output_sha256 also
+        # covers the TIFF container and answers a different question.
+        "output_content_sha256": reconstruction.get("output_content_sha256"),
         "abba_state_sha256": reconstruction.get("abba_state_sha256"),
         # Keep the scalar grid facts; the 589-plane Z profile and the 608-entry
         # selection map stay in the full report so this file remains readable.

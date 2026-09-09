@@ -1090,6 +1090,14 @@ def render_native(package_path: str) -> dict:
             "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
             "anterior_edge_policy": "duplicate_first_registered_plane",
             "output_sha256": pipeline.sha256_file(pipeline.ACTIVE_PATH),
+            # A file hash also covers the TIFF container, so it cannot answer
+            # "are the voxels the same?" -- comparing it against a voxel hash
+            # once produced a false non-reproducibility result. Record the
+            # content hash too, so two runs can be compared unambiguously.
+            "output_content_sha256": hashlib.sha256(
+                np.ascontiguousarray(native_volume).tobytes()).hexdigest(),
+            "output_content_sha256_definition":
+                "SHA-256 over the raw uint16 AP/SI/LR voxels, container excluded",
             "legacy_registered_stack_used": False,
             "stale_work_dirs_swept": swept,
         }
