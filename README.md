@@ -30,36 +30,29 @@ replace or modify Paxinos labels.
 
 ## Quick start
 
-### From a published prerelease
-
-Not yet available for 0.3.1: `asset_name`, `download_url` and `sha256` in
-`resources/optional_ch03/nissl_release_asset.json` are still empty, so this path
-resolves nothing. Until the ABBA state has been uploaded and pinned there, build
-from the local registration folder described below.
-
-Once the package is uploaded and pinned, extract the source archive to a short
-Windows path and run:
+Clone the repository to a short Windows path and run:
 
 ```cmd
-cd /d G:\paxinos_030
+cd /d G:\paxinos_031
 run_builder.bat
 ```
 
-The builder downloads and verifies missing source data, builds the atlas,
-resolves the versioned Nissl registration asset, installs all channels, applies
-the ABBA compatibility patches, and writes a final report.
-
-### Required embedded package for the next validation
-
-The build has no workstation fallback and reads only:
+Nothing else is required. Every registration input is tracked in the repository:
 
 ```text
-resources\optional_ch03\nissl_registration_0_3_0\
+resources\optional_ch03\nissl_registration_0_3_0\final_for_V_0_3.abba
+resources\optional_ch03\whs_nissl_slices_paxinos_40um_ap\   (588 planes)
 ```
 
-Keep the tracked `registration_manifest.json` and add the two required files
-listed in that directory's README. Copy the complete project root including this
-folder to the second computer; no `G:` drive or environment variable is used.
+The builder downloads and verifies the Paxinos source data, builds the atlas,
+reconstructs Ch. 3 from those inputs, installs all channels, applies the ABBA
+compatibility patches and writes a final report. It needs no release asset, no
+manually copied files, no BrainGlobe Waxholm download and no `G:` drive or
+environment variable.
+
+`nissl_release_asset.py` remains available as a maintainer path for distributing
+the registration outside the repository, but a normal build never uses it: the
+resolver checks the embedded package first and stops there.
 
 ## What the single builder does
 
@@ -384,30 +377,24 @@ the affected component.
 
 The 0.3.1 prerelease is ready for publication only after:
 
-1. the ABBA state ZIP is uploaded as an immutable release asset, and its
-   `asset_name`, `download_url` and `sha256` are filled in
-   `resources/optional_ch03/nissl_release_asset.json` — all three are still
-   empty, and `final_for_V_0_3.abba` is not tracked in git, so a fresh clone
-   currently has no registration state to build from;
-2. `run_builder.bat` succeeds from a clean clone, with no local registration
-   folder present;
-3. installation succeeds on a second Windows computer;
-4. `reports\BUILD_SUMMARY.txt` reports success with no warning beyond the
+1. `run_builder.bat` succeeds from a fresh clone, with no manually added files;
+2. installation succeeds on a second Windows computer;
+3. `reports\BUILD_SUMMARY.txt` reports success with no warning beyond the
    pending-parity notice;
-5. Ch. 0 and Ch. 3 have the same AP direction;
-6. `Native zero-valued registered planes: 0` and coverage status `complete`;
-7. `Registered Nissl alignment` is within the 400 um guard;
-8. representative AP levels pass visual ABBA QC — the anterior bulb, a
+4. Ch. 0 and Ch. 3 have the same AP direction;
+5. `Native zero-valued registered planes: 0` and coverage status `complete`;
+6. `Registered Nissl alignment` is within the 400 um guard;
+7. representative AP levels pass visual ABBA QC — the anterior bulb, a
    mid-brain level with hippocampus and ventricles, and the posterior edge;
-9. that judgement is recorded with `v38_record_visual_parity.py`, which sets
+8. that judgement is recorded with `v38_record_visual_parity.py`, which sets
    `visual_parity_status` to `passed` and `release_eligible` to true.
 
-Steps 4 to 7 are checked by the build itself. Step 8 cannot be automated, and
-step 9 exists so its result is written down rather than assumed.
+Steps 3 to 6 are checked by the build itself. Step 7 cannot be automated, and
+step 8 exists so its result is written down rather than assumed.
 
-The 588 moving planes are in the repository, so only the ABBA state travels as
-an asset. Step 2 is what proves that split works: until it has been run from a
-clone rather than this working directory, the asset wiring is untested.
+Every registration input ships in the repository: the 588 moving planes and
+`final_for_V_0_3.abba` (476 KB). Criterion 1 is what proves it — a clone must
+build with no release asset, no manual file copying and no Waxholm download.
 
 ### Recording the visual decision
 
@@ -432,9 +419,10 @@ never carry over to a channel nobody looked at.
 ### Registration inputs
 
 The 588 moving planes and `final_for_V_0_3.abba` are the authoritative
-registration inputs. The planes ship in the repository and are verified per
-plane on every build; the ABBA state is distributed as a release asset (see
-"Reproducible GitHub release asset"). Neither is re-derived.
+registration inputs. Both are tracked in the repository, the planes are verified
+against their per-plane SHA-256 on every build, and the ABBA state against the
+hash in `registration_manifest.json`. Neither is re-derived, and a build that
+finds either changed stops rather than continuing with different data.
 
 ## v0.3.1 incremental test build
 

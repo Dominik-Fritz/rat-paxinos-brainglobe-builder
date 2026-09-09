@@ -56,9 +56,12 @@ resources/label_curation/*.bak
 # Local generated atlas backups
 backups/
 resources/label_curation/*.backup_before_final_curation.tsv
+# final_for_V_0_3.abba is tracked deliberately: it is the authoritative
+# registration and only 476 KB, so a clone can build without any release asset.
+# Excluded here are the comparison-only ImageJ stack and the QuPath/BDV working
+# files, which are never build inputs.
 resources/optional_ch03/nissl_registration_0_3_0/*.tif
 resources/optional_ch03/nissl_registration_0_3_0/*.tiff
-resources/optional_ch03/nissl_registration_0_3_0/*.abba
 resources/optional_ch03/nissl_registration_0_3_0/*bdv*
 resources/optional_ch03/nissl_registration_0_3_0/*.qpproj*
 paxinos_watson_rat_nissl_registration_*.zip
