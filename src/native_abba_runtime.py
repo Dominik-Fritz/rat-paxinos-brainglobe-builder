@@ -431,12 +431,11 @@ WORK_DIR_PREFIXES = ("native-render-", "native-roundtrip-", "native-geometry-",
 
 
 def release_work_dir(work: Path) -> dict:
-    """Remove a run's scratch directory and say so when it could not be removed.
+    """Remove a run's scratch directory, reporting what could not be removed.
 
-    Each run materializes 588 Waxholm planes (~294 MB) here. The JVM may still
-    hold Bio-Formats handles when Python reaches its finally block, so removal
-    can fail -- and `ignore_errors=True` alone hid that, silently leaking a
-    directory per run. Report the remainder instead; the next run sweeps it.
+    Each run materializes 588 planes (~294 MB) here. The JVM may still hold
+    Bio-Formats handles at finally-time, so removal can fail; ignore_errors=True
+    alone hid that and leaked a directory per run.
     """
     shutil.rmtree(work, ignore_errors=True)
     if not work.exists():
@@ -469,10 +468,8 @@ def effective_brainglobe_dir() -> dict:
     """Report where BrainGlobe actually reads and writes atlases.
 
     RuntimePaths exports BRAINGLOBE_DIR, but brainglobe-atlasapi resolves its
-    directory from its own config file and ignores the environment, so the
-    exported value is advisory only. Reporting the exported path alone implied
-    a builder-local isolation that does not exist and hid the fact that the
-    Waxholm and Paxinos atlases occupy the user volume.
+    directory from its own config file and ignores the environment. Reporting
+    only the exported path implied a builder-local isolation that does not hold.
     """
     try:
         from brainglobe_atlasapi import config

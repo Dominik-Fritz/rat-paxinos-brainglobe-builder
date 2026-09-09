@@ -40,21 +40,17 @@ TARGET_ORIGIN_XYZ_MM = (
     0.0,
 )
 LANDMARK_TOLERANCE_MM = 1e-9
-# ABBA builds the export box from the slice *boundaries*, so its Z grid lands
-# exactly half a voxel off the slice centres. Every output plane then sampled a
-# slice boundary: with interpolation on, 152/589 planes came out empty and the
-# rest carried 0.485 of the source intensity; with interpolation off, intensity
-# was intact but 244 planes were empty. Measured (reports/native_abba/
-# export_parameter_probe*.json): margin 0 and 40 um behave identically because
-# they differ by a whole voxel, 20 um corrects the phase but leaves the last
-# registered section outside the stack, and 60 um -- half a voxel for the phase
-# plus one voxel of margin -- gives phase 0, 0.965 intensity and reaches all
-# 588 registered target planes with no empty one among them.
+# ABBA derives the export box from slice boundaries, putting its Z grid half a
+# voxel off the slice centres. At margin 40 um that emptied 152/589 planes and
+# left the rest at 0.485 of source intensity. Only odd multiples of the half
+# voxel restore phase 0: measured at 0/20/40/60 um, 0 and 40 behave alike (a
+# whole voxel apart), 20 drops the last registered section off the stack, and 60
+# gives phase 0, 0.965 intensity and all 588 target planes covered.
+# See reports/native_abba/export_parameter_probe*.json.
 NATIVE_EXPORT_MARGIN_Z_UM = 60.0
-# interval_min/max are recomputed by ABBA from the currently opened fixed source,
-# so they are informative, not a gate.  Comparing them with exact float equality
-# reported all 588 sources as "changed" for last-ulp noise (~2e-15 mm) as soon as
-# the fixed source moved off origin zero.  Flag only changes far above that floor.
+# ABBA recomputes interval_min/max from the open fixed source, so bounds are
+# informative, not a gate. Exact float equality flagged all 588 sources over
+# ~2e-15 mm of last-ulp noise once the fixed source left origin zero.
 BOUNDS_TOLERANCE_MM = 1e-9
 
 
@@ -90,9 +86,8 @@ def _signal_stats(plane: np.ndarray) -> dict:
 
 MOVING_PLANE_MANIFEST = ROOT / "resources/optional_ch03/whs_nissl_slices_manifest.json"
 MOVING_PLANE_DIR = ROOT / "resources/optional_ch03/whs_nissl_slices_paxinos_40um_ap"
-# 255 * 257 == 65535: one constant factor for every plane. Relative intensity
-# between planes is untouched, so this is a range mapping and not the per-slice
-# normalization that section 9 of the handover forbids.
+# 255 * 257 == 65535. One constant factor for all planes, so relative intensity
+# between planes is untouched: a range mapping, not per-slice normalization.
 UINT8_TO_UINT16_SCALE = 257
 
 
@@ -114,10 +109,8 @@ def _load_moving_plane_manifest() -> dict:
 def _moving_source_provenance(package_manifest: dict, plane_manifest: dict) -> dict:
     """Describe the moving data without needing the Waxholm package on disk.
 
-    The pinned planes are the registration's actual input, so the BrainGlobe
-    Waxholm package no longer supplies a single pixel; its identifiers are kept
-    here purely to record where that export ultimately came from. Requiring a
-    2.3 GB download to restate provenance served nothing.
+    The pinned planes are the registration's input, so the BrainGlobe package
+    supplies no pixels; its identifiers only record where the export came from.
     """
     digest = hashlib.sha256()
     for source_id in range(588):
@@ -144,18 +137,13 @@ def _moving_source_provenance(package_manifest: dict, plane_manifest: dict) -> d
 
 
 def _single_plane_tiffs(folder: Path) -> tuple[list[Path], list[dict]]:
-    """Materialize the exact planes the saved registration was built against.
+    """Materialize the planes the saved registration was built against.
 
-    These are pinned in resources/, not re-derived from the Waxholm BrainGlobe
-    volume. The saved ABBA state names its moving sources
-    whs_nissl_40um_ap_*.tiff and its QuPath project pointed at an export that
-    had already been resampled onto the Paxinos 40 um AP grid. Re-deriving the
-    planes from the raw 39 um reference volume gave images displaced by 22-25
-    voxels in LR -- not a constant shift, so it cannot be undone arithmetically
-    -- which is exactly the ~880 um lateral offset seen in the built atlas.
-
-    The Waxholm BrainGlobe package is no longer read here at all; it survives
-    only as provenance in _moving_source_provenance().
+    The state's QuPath project pointed at an export already resampled onto the
+    Paxinos 40 um AP grid, so these are pinned in resources/ rather than
+    re-derived from the raw 39 um Waxholm volume. That re-derivation was
+    displaced 22-25 voxels in LR -- varying with AP, so not correctable
+    arithmetically -- and produced the ~880 um offset in the built atlas.
     """
     planes = _load_moving_plane_manifest()["planes"]
     folder.mkdir(parents=True, exist_ok=True)
@@ -464,12 +452,10 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path,
 
 def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Path,
                                      diff_path: Path | None = None) -> dict:
-    # ABBAStateSaveCommand reports failure instead of overwriting an existing
-    # file. The first build created this artifact, so every later build died
-    # here with "ABBAStateSaveCommand reported failure" before rendering
-    # anything. Verified by A/B run: with the file present the save fails, with
-    # it absent the same state saves and verifies, on *less* free disk.
-    # The destination is regenerated evidence for the current run, never input.
+    # ABBAStateSaveCommand reports failure rather than overwriting, so once the
+    # first build had created this artifact every later build died here before
+    # rendering. Confirmed by A/B run on less free disk. The file is regenerated
+    # evidence for the current run, never an input.
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.unlink(missing_ok=True)
     saved = abba.state_save(_java_file(destination))
@@ -523,15 +509,13 @@ def _slice_scalar_getters(slice_source) -> list[str]:
 def _audit_native_slice_state(abba) -> dict:
     """Verify the restored slice lattice through the API ABBA actually has.
 
-    This replaces an audit that called getTolerance()/getMaxIteration() on
-    SliceSources. Neither method exists in ABBA 0.11, so the check raised on
-    every build, was swallowed as a warning, and the slice state went entirely
-    unverified. Reflection over the real class shows no iterative-inverse
-    optimizer values at all, so those cannot be audited from here and this says
-    so rather than implying otherwise.
+    The previous audit called getTolerance()/getMaxIteration(); neither exists
+    in ABBA 0.11, so it raised on every build and the slice state went
+    unverified. Reflection shows no optimizer values on the class at all, hence
+    iterative_inverse_settings_available is reported as False.
 
-    What it does check is the invariant that matters for the export: 588 slices,
-    each carrying a registration, on a uniformly spaced slicing axis.
+    Checked here is the invariant the export depends on: 588 slices, each with a
+    registration, on a uniformly spaced slicing axis.
     """
     slices = list(abba.mp.getSlices())
     if len(slices) != 588:
@@ -766,11 +750,9 @@ def _classify_blank_registered_planes(grid_diagnostics: dict, target_ap: np.ndar
                                       source_plane_diagnostics: list[dict]) -> dict:
     """Attribute every all-zero registered plane to the stage that produced it.
 
-    Stage 1 is the pinned Waxholm source, stage 2 is ABBA's native BDV export,
-    stage 3 is the Python change of sampling grid.  Treating these as one
-    "brightness" problem hides which component must be fixed.  This is pure
-    accounting over already-recorded statistics: no plane is filled, copied,
-    normalized or otherwise altered.
+    Stage 1 is the pinned source, stage 2 ABBA's BDV export, stage 3 the Python
+    change of sampling grid. Lumping them together as "brightness" hides which
+    component needs fixing. Accounting only; no plane is filled or altered.
     """
     selection = {int(item["target_ap"]): item
                  for item in grid_diagnostics.get("native_plane_selection", [])}
@@ -823,13 +805,8 @@ def _classify_blank_registered_planes(grid_diagnostics: dict, target_ap: np.ndar
     }
 
 
-# Ten voxels at 40 um: the point where a lateral offset is plainly visible when
-# the Nissl channel is viewed under the Paxinos contours. The measured state is
-# ~840 um LR / ~40 um SI, so this guard fires today and keeps firing until the
-# cause is resolved -- the Waxholm source sits ~448 um off-centre in its own
-# array, the remainder comes from the authoritative BigWarp landmarks. It is a
-# guard, never a correction: nothing here shifts, masks or rescales a voxel,
-# because doing so on the strength of this median is what §8.2/§9 forbid.
+# Ten voxels at 40 um, the point where a lateral offset is plainly visible under
+# the Paxinos contours. A guard, never a correction: nothing here moves a voxel.
 ALIGNMENT_WARNING_UM = 400.0
 
 
@@ -837,13 +814,11 @@ def _alignment_diagnostics(labels: np.ndarray, volume: np.ndarray,
                            target_ap: np.ndarray, sample: int = 25) -> dict:
     """Measure residual SI/LR alignment by mask cross-correlation.
 
-    _spatial_diagnostics compares centroids of unequal supports: registered
-    histology carries tissue the annotation does not label, which dragged its
-    SI number to ~200 um where the true SI offset is zero. Correlating the two
-    binary masks is insensitive to that, so this is the number to trust.
+    Prefer this over _spatial_diagnostics, which compares centroids of unequal
+    supports: registered histology carries tissue the annotation does not label,
+    which inflated its SI figure to ~200 um where the true offset is zero.
 
-    Diagnostic only. It never shifts, masks or rescales a voxel; §8.2 of the
-    handover forbids moving anything on the strength of this median.
+    Diagnostic only; no voxel is moved on the strength of this median.
     """
     if not target_ap.size:
         return {"measured_plane_count": 0, "median_shift_si_lr_um": None}
@@ -1090,10 +1065,8 @@ def render_native(package_path: str) -> dict:
             "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
             "anterior_edge_policy": "duplicate_first_registered_plane",
             "output_sha256": pipeline.sha256_file(pipeline.ACTIVE_PATH),
-            # A file hash also covers the TIFF container, so it cannot answer
-            # "are the voxels the same?" -- comparing it against a voxel hash
-            # once produced a false non-reproducibility result. Record the
-            # content hash too, so two runs can be compared unambiguously.
+            # A file hash covers the TIFF container too, so it cannot answer
+            # whether two runs produced the same voxels. Record both.
             "output_content_sha256": hashlib.sha256(
                 np.ascontiguousarray(native_volume).tobytes()).hexdigest(),
             "output_content_sha256_definition":
@@ -1101,11 +1074,9 @@ def render_native(package_path: str) -> dict:
             "legacy_registered_stack_used": False,
             "stale_work_dirs_swept": swept,
         }
-        # The reconstruction block is persisted before installing so the
-        # evidence survives an installation crash. write_report() merges into
-        # the existing JSON, so without an explicit status a failed install --
-        # or a later failed run -- leaves a block that reads as a complete
-        # success, output_sha256 included. Say plainly which stage was reached.
+        # Persisted before installing so the evidence survives a crash there.
+        # write_report() merges, so without a status a failed install leaves a
+        # block reading as a complete success. Record the stage reached.
         report["install_status"] = "pending"
         pipeline.write_report({"abba_reconstruction": report})
         pipeline.install_channel(report)

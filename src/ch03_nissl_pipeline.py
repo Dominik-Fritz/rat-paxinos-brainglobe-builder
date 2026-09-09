@@ -333,12 +333,11 @@ def write_nifti(active: np.ndarray, reference_atlas: Path, destination_dir: Path
                 name: str) -> Path:
     """Save the Ch03 volume using the atlas annotation's authoritative header.
 
-    `reference_atlas` supplies annotation.nii.gz (affine, header and the target
-    axis order); `destination_dir` receives the file. These used to be one
-    parameter, which made the only call site unsatisfiable: it guarded on the
-    staging directory containing annotation.nii.gz, and a fresh mkdtemp never
-    does. The guard therefore always chose an inline fallback that transposes
-    without checking, and the explicit orientation check below was dead.
+    `reference_atlas` supplies annotation.nii.gz (affine, header, axis order);
+    `destination_dir` receives the file. As one parameter this was unsatisfiable
+    -- the only call site guarded on the staging directory holding
+    annotation.nii.gz, which a fresh mkdtemp never does -- so the orientation
+    check below was dead and an unchecked fallback ran instead.
     """
     annotation = nib.load(str(reference_atlas / "annotation.nii.gz"))
     target_shape = tuple(int(v) for v in annotation.shape[:3])
@@ -457,12 +456,10 @@ def install_channel(import_report: dict) -> list[dict]:
                 snapshots[destination] = (existed, backup)
         installed = [_transactional_atlas_install(atlas, active, import_report) for atlas in eligible]
     except Exception:
-        # The transaction snapshot lives under reports/ on the builder volume,
-        # while an installed atlas can sit on another drive; os.replace() then
-        # raises WinError 17 and, happening inside this handler, replaced the
-        # real installation error with a misleading "cannot move file" message.
-        # Restore by copy (drive-agnostic) and never let a rollback problem
-        # displace the original exception.
+        # The snapshot lives under reports/ while an installed atlas can sit on
+        # another drive, where os.replace() raises WinError 17 -- inside this
+        # handler that replaced the real installation error. Restore by copy and
+        # never let a rollback problem displace the original exception.
         rollback_failures = []
         for destination, (existed, backup) in snapshots.items():
             try:

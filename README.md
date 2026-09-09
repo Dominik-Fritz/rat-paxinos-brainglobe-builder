@@ -301,6 +301,30 @@ The final summary states whether the build succeeded, where the atlas was
 installed, whether the Nissl channel was found, which additional references are
 registered, and where detailed reports are located.
 
+## Developer probes
+
+Four read-only entry points isolate one stage of the native path each. None of
+them installs anything or writes to an atlas; they are diagnostic tools, not
+part of a normal build. Each takes the registration package as its argument:
+
+```cmd
+.venv\Scripts\python.exe src\v34_debug_transform_roundtrip.py ^
+  resources\optional_ch03\nissl_registration_0_3_0
+```
+
+| Script | Stage | Report |
+|---|---|---|
+| `v34_debug_transform_roundtrip.py` | state load and save, landmark audit | `transform_roundtrip_diff.json` |
+| `v35_debug_slice_geometry.py` | slice selection, thickness, AP lattice | `slice_geometry_probe.json` |
+| `v36_debug_export_parameters.py` | export parameters against the Z profile | `export_parameter_probe.json` |
+| `v37_debug_export_determinism.py` | bit-reproducibility of the export | `export_determinism_probe.json` |
+
+They run in minutes instead of a full build, which is why the export Z phase and
+the lateral offset were found with them rather than by repeated rebuilding.
+`v35` and `v36` discover Java method names by reflection instead of assuming
+them, so an ABBA API change shows up as a changed listing rather than a silent
+failure.
+
 ## ABBA inspection after a successful build
 
 1. Close all Fiji/ABBA windows.
