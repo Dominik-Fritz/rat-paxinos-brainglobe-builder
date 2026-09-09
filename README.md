@@ -1,9 +1,10 @@
 # Rat Paxinos/Watson BrainGlobe Atlas Builder
 
 This repository builds and installs the local BrainGlobe-compatible
-`paxinos_watson_rat_40um` atlas for Fiji/ABBA. Version 0.3.0 adds a manually
-registered Waxholm Space (WHS) Nissl reference channel while preserving the
-Paxinos/Watson annotation and ontology as the authoritative atlas data.
+`paxinos_watson_rat_40um` atlas for Fiji/ABBA. Version 0.3.0 added a manually
+registered Waxholm Space (WHS) Nissl reference channel; 0.3.1 reconstructs that
+channel through native ABBA 0.11 from pinned, hash-verified registration inputs.
+The Paxinos/Watson annotation and ontology remain the authoritative atlas data.
 
 The repository has one Windows entry point:
 
@@ -29,11 +30,15 @@ replace or modify Paxinos labels.
 
 ## Quick start
 
-### Published 0.3.0 prerelease
+### From a published prerelease
 
-After the Nissl package has been uploaded and pinned in
-`resources/optional_ch03/nissl_release_asset.json`, extract the source archive
-to a short Windows path and run:
+Not yet available for 0.3.1: `asset_name`, `download_url` and `sha256` in
+`resources/optional_ch03/nissl_release_asset.json` are still empty, so this path
+resolves nothing. Until the ABBA state has been uploaded and pinned there, build
+from the local registration folder described below.
+
+Once the package is uploaded and pinned, extract the source archive to a short
+Windows path and run:
 
 ```cmd
 cd /d G:\paxinos_030
@@ -89,7 +94,7 @@ The console output is divided into six phases:
    - writes `reports\BUILD_SUMMARY.txt`.
 
 The ABBA patch and Nissl import are enabled by default. Diagnostic opt-outs are
-available, but they do not represent the intended 0.3.0 release build:
+available, but they do not represent the intended 0.3.1 release build:
 
 ```cmd
 run_builder.bat --no-patch-abba
@@ -145,16 +150,16 @@ The historical
 normal build inputs or silent fallbacks; they may only be supplied separately
 for numerical/visual v0.3.0 comparison.
 
-The renderer applies the embedded BDV pixel-to-world affine for every source
-and numerically inverts the actual forward BigWarp thin-plate spline. Merely
-fitting a second spline with exchanged source/target landmarks is not treated
-as the inverse, because that changes nonlinear registrations. Target and source
-pixel origins follow BDV's `-size * spacing / 2` convention.
-The inverse is evaluated in bounded chunks with per-pixel convergence. Rare
-boundary pixels for which the curated forward TPS has no numerically valid
-inverse are sampled with the documented constant-zero boundary policy and
-listed per source/AP plane in the reconstruction report; converged pixels are
-never discarded merely because a different pixel in the same plane fails.
+No spline is evaluated in Python. ABBA restores the saved transforms and
+performs the inversion itself; the builder only rebinds the moving sources,
+crosses ABBA's task barrier, exports, and moves the resulting raster onto the
+target grid. The paragraphs about chunked inversion and a constant-zero boundary
+policy describe the experimental Python reproduction in `abba_nissl.py`, which is
+gated off and never runs in a normal build.
+
+Along AP the exported volume is sampled by nearest native plane, never blended
+between neighbouring sections; within a plane the change of grid is bilinear.
+Export margin and grid phase are covered under "Native ABBA parity gate".
 
 The confirmed `+1` target offset is an offset within the 589 non-empty Paxinos
 label planes, not an absolute volume index. The 588 registrations are therefore
@@ -220,10 +225,11 @@ The manifest pins:
 - SHA-256 checksum;
 - exact ABBA filename/hash, source range, AP direction and edge policy.
 
-The builder stores verified downloads under:
+The builder stores verified downloads under a directory named after the
+manifest's `release` field:
 
 ```text
-data\release_assets\0.3.0-prerelease\
+data\release_assets\0.3.1-prerelease\
 ```
 
 A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
@@ -245,18 +251,18 @@ This maintainer command creates the immutable ZIP from the completed project:
 .venv\Scripts\python.exe src\nissl_release_asset.py create ^
   --root . ^
   --source resources\optional_ch03\nissl_registration_0_3_0 ^
-  --output paxinos_watson_rat_nissl_registration_0.3.0.zip
+  --output paxinos_watson_rat_nissl_registration_0.3.1.zip
 ```
 
-The command prints the SHA-256 checksum. Upload the ZIP to the GitHub 0.3.0
+The command prints the SHA-256 checksum. Upload the ZIP to the GitHub 0.3.1
 prerelease, then pin its direct download URL and checksum without manual JSON
 editing:
 
 ```cmd
 .venv\Scripts\python.exe src\nissl_release_asset.py pin ^
   --root . ^
-  --asset paxinos_watson_rat_nissl_registration_0.3.0.zip ^
-  --url https://github.com/OWNER/REPOSITORY/releases/download/TAG/paxinos_watson_rat_nissl_registration_0.3.0.zip
+  --asset paxinos_watson_rat_nissl_registration_0.3.1.zip ^
+  --url https://github.com/OWNER/REPOSITORY/releases/download/TAG/paxinos_watson_rat_nissl_registration_0.3.1.zip
 ```
 
 Commit the resulting manifest update before publishing the final source
@@ -376,16 +382,59 @@ the affected component.
 
 ## Release acceptance criteria
 
-The 0.3.0 prerelease is ready for publication only after:
+The 0.3.1 prerelease is ready for publication only after:
 
-1. the Nissl ZIP is uploaded as an immutable release asset;
-2. its direct URL and SHA-256 are committed in the manifest;
-3. `run_builder.bat` succeeds from a clean root without a local registration
-   folder;
-4. installation succeeds on a second Windows computer;
+1. the ABBA state ZIP is uploaded as an immutable release asset, and its
+   `asset_name`, `download_url` and `sha256` are filled in
+   `resources/optional_ch03/nissl_release_asset.json` — all three are still
+   empty, and `final_for_V_0_3.abba` is not tracked in git, so a fresh clone
+   currently has no registration state to build from;
+2. `run_builder.bat` succeeds from a clean clone, with no local registration
+   folder present;
+3. installation succeeds on a second Windows computer;
+4. `reports\BUILD_SUMMARY.txt` reports success with no warning beyond the
+   pending-parity notice;
 5. Ch. 0 and Ch. 3 have the same AP direction;
-6. representative levels pass visual ABBA QC;
-7. `reports\BUILD_SUMMARY.txt` reports success.
+6. `Native zero-valued registered planes: 0` and coverage status `complete`;
+7. `Registered Nissl alignment` is within the 400 um guard;
+8. representative AP levels pass visual ABBA QC — the anterior bulb, a
+   mid-brain level with hippocampus and ventricles, and the posterior edge;
+9. that judgement is recorded with `v38_record_visual_parity.py`, which sets
+   `visual_parity_status` to `passed` and `release_eligible` to true.
+
+Steps 4 to 7 are checked by the build itself. Step 8 cannot be automated, and
+step 9 exists so its result is written down rather than assumed.
+
+The 588 moving planes are in the repository, so only the ABBA state travels as
+an asset. Step 2 is what proves that split works: until it has been run from a
+clone rather than this working directory, the asset wiring is untested.
+
+### Recording the visual decision
+
+Nothing in the build sets `visual_parity_status`; it stays `pending` until a
+person records a decision:
+
+```cmd
+.venv\Scripts\python.exe src\v38_record_visual_parity.py passed ^
+  --reviewer "Your Name" --notes "AP 10-597 checked" --apply
+```
+
+`--apply` writes the decision into the installed atlas through the transactional
+install path, without re-rendering. Omit it to record the decision only and let
+the next build pick it up. `failed` is equally recordable and makes the install
+refuse the channel.
+
+The approval names the `output_content_sha256` of the reconstruction it was
+given for. A later build whose voxels differ produces a different hash, so the
+approval stops applying and the status reverts to `pending` — an approval can
+never carry over to a channel nobody looked at.
+
+### Registration inputs
+
+The 588 moving planes and `final_for_V_0_3.abba` are the authoritative
+registration inputs. The planes ship in the repository and are verified per
+plane on every build; the ABBA state is distributed as a release asset (see
+"Reproducible GitHub release asset"). Neither is re-derived.
 
 ## v0.3.1 incremental test build
 

@@ -91,6 +91,60 @@ MOVING_PLANE_DIR = ROOT / "resources/optional_ch03/whs_nissl_slices_paxinos_40um
 UINT8_TO_UINT16_SCALE = 257
 
 
+VISUAL_PARITY_APPROVAL = ROOT / "resources/optional_ch03/visual_parity_approval.json"
+VISUAL_PARITY_STATES = {"pending", "passed", "failed"}
+
+
+def content_sha256_of(volume: np.ndarray) -> str:
+    """Identity of the reconstruction itself, TIFF container excluded."""
+    return hashlib.sha256(np.ascontiguousarray(volume).tobytes()).hexdigest()
+
+
+def resolve_visual_parity(content_sha256: str) -> dict:
+    """Resolve the recorded visual-parity decision for this exact reconstruction.
+
+    Visual validation is a human judgement, so nothing in the build sets it. An
+    approval names the content hash it was given for; a later build whose voxels
+    differ therefore falls back to pending instead of inheriting the decision.
+    """
+    absent = {"visual_parity_status": "pending", "release_eligible": False,
+              "visual_parity_approval": {"recorded": False, "applies_to_this_build": False}}
+    if not VISUAL_PARITY_APPROVAL.is_file():
+        return absent
+    try:
+        record = json.loads(VISUAL_PARITY_APPROVAL.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        absent["visual_parity_approval"]["error"] = f"unreadable approval: {exc}"
+        return absent
+    status = record.get("visual_parity_status")
+    approved_for = record.get("output_content_sha256")
+    provenance = {
+        "recorded": True,
+        "file": str(VISUAL_PARITY_APPROVAL),
+        "recorded_status": status,
+        "approved_for_content_sha256": approved_for,
+        "reviewer": record.get("reviewer"),
+        "reviewed_utc": record.get("reviewed_utc"),
+        "notes": record.get("notes"),
+    }
+    if status not in VISUAL_PARITY_STATES - {"pending"}:
+        provenance["applies_to_this_build"] = False
+        provenance["reason"] = f"recorded status {status!r} is not a decision"
+        return {"visual_parity_status": "pending", "release_eligible": False,
+                "visual_parity_approval": provenance}
+    if approved_for != content_sha256:
+        provenance["applies_to_this_build"] = False
+        provenance["reason"] = (
+            "approval names a different reconstruction; this build produced "
+            f"{content_sha256}"
+        )
+        return {"visual_parity_status": "pending", "release_eligible": False,
+                "visual_parity_approval": provenance}
+    provenance["applies_to_this_build"] = True
+    return {"visual_parity_status": status, "release_eligible": status == "passed",
+            "visual_parity_approval": provenance}
+
+
 def _load_moving_plane_manifest() -> dict:
     if not MOVING_PLANE_MANIFEST.is_file():
         raise NisslBuildError(
@@ -1010,9 +1064,11 @@ def render_native(package_path: str) -> dict:
         temporary = pipeline.ACTIVE_PATH.with_suffix(".tiff.partial")
         tifffile.imwrite(temporary, native_volume, bigtiff=True)
         pipeline.activate_validated_tiff(temporary, pipeline.ACTIVE_PATH)
+        content_sha256 = content_sha256_of(native_volume)
+        parity = resolve_visual_parity(content_sha256)
         report = {
             "renderer_backend": "native_abba_0.11", "native_backend_verified": True,
-            "visual_parity_status": "pending", "release_eligible": False,
+            **parity,
             "source": source_report, "source_binding": binding, "fixed_source": fixed_source_report,
             "moving_plane_provenance": {
                 "pinned_manifest": str(MOVING_PLANE_MANIFEST),
@@ -1067,8 +1123,7 @@ def render_native(package_path: str) -> dict:
             "output_sha256": pipeline.sha256_file(pipeline.ACTIVE_PATH),
             # A file hash covers the TIFF container too, so it cannot answer
             # whether two runs produced the same voxels. Record both.
-            "output_content_sha256": hashlib.sha256(
-                np.ascontiguousarray(native_volume).tobytes()).hexdigest(),
+            "output_content_sha256": content_sha256,
             "output_content_sha256_definition":
                 "SHA-256 over the raw uint16 AP/SI/LR voxels, container excluded",
             "legacy_registered_stack_used": False,

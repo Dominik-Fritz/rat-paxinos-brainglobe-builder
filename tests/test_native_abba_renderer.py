@@ -539,6 +539,97 @@ class PinnedMovingPlaneTests(unittest.TestCase):
         self.assertIn("MOVING_PLANE_DIR", materialize)
 
 
+class VisualParityApprovalTests(unittest.TestCase):
+    """A decision must be human, explicit, and bound to one reconstruction."""
+
+    HASH = "a" * 64
+
+    def _record(self, temporary, **fields):
+        path = Path(temporary) / "visual_parity_approval.json"
+        base = {"visual_parity_status": "passed", "output_content_sha256": self.HASH,
+                "reviewer": "Dominik Fritz", "reviewed_utc": "2026-09-09T10:00:00+00:00"}
+        base.update(fields)
+        path.write_text(json.dumps(base), encoding="utf-8")
+        return path
+
+    def test_no_approval_file_means_pending(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "absent.json"
+            with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", missing):
+                result = renderer.resolve_visual_parity(self.HASH)
+            self.assertEqual(result["visual_parity_status"], "pending")
+            self.assertFalse(result["release_eligible"])
+            self.assertFalse(result["visual_parity_approval"]["recorded"])
+
+    def test_matching_approval_passes_and_carries_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._record(temporary, notes="AP 10-597 geprueft")
+            with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
+                result = renderer.resolve_visual_parity(self.HASH)
+            self.assertEqual(result["visual_parity_status"], "passed")
+            self.assertTrue(result["release_eligible"])
+            approval = result["visual_parity_approval"]
+            self.assertTrue(approval["applies_to_this_build"])
+            self.assertEqual(approval["reviewer"], "Dominik Fritz")
+            self.assertEqual(approval["notes"], "AP 10-597 geprueft")
+
+    def test_a_later_build_does_not_inherit_the_approval(self):
+        # The whole point: different voxels, therefore a different hash.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._record(temporary)
+            with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
+                result = renderer.resolve_visual_parity("b" * 64)
+            self.assertEqual(result["visual_parity_status"], "pending")
+            self.assertFalse(result["release_eligible"])
+            approval = result["visual_parity_approval"]
+            self.assertFalse(approval["applies_to_this_build"])
+            self.assertIn("different reconstruction", approval["reason"])
+
+    def test_failed_is_recorded_and_blocks_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._record(temporary, visual_parity_status="failed")
+            with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
+                result = renderer.resolve_visual_parity(self.HASH)
+            self.assertEqual(result["visual_parity_status"], "failed")
+            self.assertFalse(result["release_eligible"])
+
+    def test_pending_or_junk_in_the_file_is_not_a_decision(self):
+        for value in ("pending", "yes", None):
+            with tempfile.TemporaryDirectory() as temporary:
+                path = self._record(temporary, visual_parity_status=value)
+                with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
+                    result = renderer.resolve_visual_parity(self.HASH)
+                self.assertEqual(result["visual_parity_status"], "pending", value)
+                self.assertFalse(result["release_eligible"], value)
+
+    def test_unreadable_approval_falls_back_to_pending(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "broken.json"
+            path.write_text("{not json", encoding="utf-8")
+            with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
+                result = renderer.resolve_visual_parity(self.HASH)
+            self.assertEqual(result["visual_parity_status"], "pending")
+            self.assertIn("error", result["visual_parity_approval"])
+
+    def test_renderer_never_hardcodes_a_decision(self):
+        source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('"visual_parity_status": "pending", "release_eligible": False,\n'
+                         '            "source"', source)
+        self.assertIn("resolve_visual_parity(content_sha256)", source)
+        self.assertNotIn('"visual_parity_status": "passed"', source)
+
+    def test_recorder_hashes_the_file_not_the_report(self):
+        source = (Path(__file__).parents[1] / "src/v38_record_visual_parity.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("tifffile.imread(pipeline.ACTIVE_PATH)", source)
+        self.assertIn("does not match the last report", source)
+        self.assertIn('choices=("passed", "failed")', source)
+        self.assertIn("--reviewer", source)
+
+
 class OutputHashTests(unittest.TestCase):
     def test_report_records_a_container_free_content_hash(self):
         # output_sha256 hashes the TIFF file, so it cannot answer whether two
@@ -547,8 +638,8 @@ class OutputHashTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"output_content_sha256"', source)
-        self.assertIn("np.ascontiguousarray(native_volume).tobytes()", source)
+        self.assertIn('"output_content_sha256": content_sha256', source)
+        self.assertIn("np.ascontiguousarray(volume).tobytes()", source)
         summary = (Path(__file__).parents[1] / "src/summarize_native_abba_diagnostics.py").read_text(
             encoding="utf-8"
         )
