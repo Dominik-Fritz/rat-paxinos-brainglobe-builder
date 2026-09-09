@@ -1,2 +1,16 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Checksum-verified inputs must survive checkout byte for byte. Line-ending
+# normalization silently rewrote the shipped Paxinos label files on clone
+# (57063 -> 58161 bytes), the md5 guard rejected them, and the build fell back
+# to a Zenodo download it should never have needed.
+data/external/bluebrain_headmodels_v1/** binary
+
+# Registration inputs and image data, verified by SHA-256 on every build.
+*.abba binary
+*.tif binary
+*.tiff binary
+*.nii binary
+*.nii.gz binary
+*.gz binary
