@@ -317,8 +317,20 @@ if /I "%WITH_NISSL%"=="NO" (
             echo WARNING [NATIVE_DIAGNOSTICS_SUMMARY]: Compact native diagnostics could not be written.
             set "BUILD_WARNINGS=YES"
         )
-        echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
-        set "BUILD_WARNINGS=YES"
+        set "NISSL_PARITY=PENDING"
+        "%VENV_PY%" "src\report_parity_state.py" --root "%BUILDER_ROOT%" > "%BUILDER_ROOT%\reports\parity_state.txt"
+        if exist "%BUILDER_ROOT%\reports\parity_state.txt" set /p NISSL_PARITY=<"%BUILDER_ROOT%\reports\parity_state.txt"
+        if /I "!NISSL_PARITY!"=="PASSED" (
+            echo   Visual parity: recorded as passed; the atlas is release eligible.
+        ) else (
+            if /I "!NISSL_PARITY!"=="FAILED" (
+                echo WARNING [VISUAL_VALIDATION_FAILED]: Ch03 was recorded as failing visual parity.
+            ) else (
+                echo WARNING [VISUAL_VALIDATION_PENDING]: Native Ch03 installed for visual testing; release eligibility remains false.
+                echo   Record a decision with: .venv\Scripts\python.exe src\v38_record_visual_parity.py passed --reviewer "NAME" --apply
+            )
+            set "BUILD_WARNINGS=YES"
+        )
     )
 )
 
