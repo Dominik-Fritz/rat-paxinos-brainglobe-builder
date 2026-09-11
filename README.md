@@ -1,9 +1,10 @@
 # Rat Paxinos/Watson BrainGlobe Atlas Builder
 
 This repository builds and installs the local BrainGlobe-compatible
-`paxinos_watson_rat_40um` atlas for Fiji/ABBA. Version 0.3.0 adds a manually
-registered Waxholm Space (WHS) Nissl reference channel while preserving the
-Paxinos/Watson annotation and ontology as the authoritative atlas data.
+`paxinos_watson_rat_40um` atlas for Fiji/ABBA. Version 0.3.0 added a manually
+registered Waxholm Space (WHS) Nissl reference channel; 0.3.1 reconstructs that
+channel through native ABBA 0.11 from pinned, hash-verified registration inputs.
+The Paxinos/Watson annotation and ontology remain the authoritative atlas data.
 
 The repository has one Windows entry point:
 
@@ -29,32 +30,29 @@ replace or modify Paxinos labels.
 
 ## Quick start
 
-### Published 0.3.0 prerelease
-
-After the Nissl package has been uploaded and pinned in
-`resources/optional_ch03/nissl_release_asset.json`, extract the source archive
-to a short Windows path and run:
+Clone the repository to a short Windows path and run:
 
 ```cmd
-cd /d G:\paxinos_030
+cd /d G:\paxinos_031
 run_builder.bat
 ```
 
-The builder downloads and verifies missing source data, builds the atlas,
-resolves the versioned Nissl registration asset, installs all channels, applies
-the ABBA compatibility patches, and writes a final report.
-
-### Required embedded package for the next validation
-
-The build has no workstation fallback and reads only:
+Nothing else is required. Every registration input is tracked in the repository:
 
 ```text
-resources\optional_ch03\nissl_registration_0_3_0\
+resources\optional_ch03\nissl_registration_0_3_0\final_for_V_0_3.abba
+resources\optional_ch03\whs_nissl_slices_paxinos_40um_ap\   (588 planes)
 ```
 
-Keep the tracked `registration_manifest.json` and add the two required files
-listed in that directory's README. Copy the complete project root including this
-folder to the second computer; no `G:` drive or environment variable is used.
+The builder downloads and verifies the Paxinos source data, builds the atlas,
+reconstructs Ch. 3 from those inputs, installs all channels, applies the ABBA
+compatibility patches and writes a final report. It needs no release asset, no
+manually copied files, no BrainGlobe Waxholm download and no `G:` drive or
+environment variable.
+
+`nissl_release_asset.py` remains available as a maintainer path for distributing
+the registration outside the repository, but a normal build never uses it: the
+resolver checks the embedded package first and stops there.
 
 ## What the single builder does
 
@@ -89,7 +87,7 @@ The console output is divided into six phases:
    - writes `reports\BUILD_SUMMARY.txt`.
 
 The ABBA patch and Nissl import are enabled by default. Diagnostic opt-outs are
-available, but they do not represent the intended 0.3.0 release build:
+available, but they do not represent the intended 0.3.1 release build:
 
 ```cmd
 run_builder.bat --no-patch-abba
@@ -120,11 +118,65 @@ positions 1 through 588. Because no separately registered anterior edge image
 exists, position zero displays a documented duplicate of the nearest registered
 section. No interpolation or new registration is performed.
 
-The ImageJ export has the shape `(588, 656, 940)` at an in-plane calibration of
-19.5 µm. The atlas TIFF grid is `(608, 286, 409)` in AP/SI/LR order at 40 µm.
-The importer samples the centered physical ImageJ canvas onto the Paxinos grid.
-This is a calibrated grid conversion, not a new anatomical registration; the
-manually defined BigWarp transformations remain unchanged.
+Since v0.3.1, `final_for_V_0_3.abba` (SHA-256
+`e038741ac9825c35e62c1e88658c3533a5e4da3460ebc9644275c4b6e48e7f06`) is the
+authoritative registration input. The builder strictly validates its 588
+sources, action chains and ThinplateSpline transforms, then feeds them the
+moving images the registration was actually created against: the 588 pinned
+planes in `resources\optional_ch03\whs_nissl_slices_paxinos_40um_ap\`, each
+verified against its SHA-256 in `whs_nissl_slices_manifest.json` and scaled
+from UINT8 to UINT16 by the single constant factor 257.
+
+These planes are a Waxholm export that had already been resampled onto the
+Paxinos 40 um AP grid; the QuPath project of the saved state points at exactly
+this set. Re-deriving them from the raw 39 um `whs_sd_rat_39um` reference volume
+is **not** equivalent — measured against the pinned files such a re-derivation
+is displaced by 22-25 voxels in LR, and that reproduced as a ~880 um lateral
+offset in the built atlas. The displacement is not constant across AP, so it
+cannot be corrected arithmetically. The BrainGlobe Waxholm package is therefore
+no longer read by the native path at all; its identifiers survive in the
+manifest as provenance only, and no download is required.
+
+The channel is reconstructed directly on the `(608, 286, 409)` AP/SI/LR grid.
+The historical
+`registered_slices_ImageJ_stack.tif` and its centred 656 x 940 canvas are never
+normal build inputs or silent fallbacks; they may only be supplied separately
+for numerical/visual v0.3.0 comparison.
+
+No spline is evaluated in Python. ABBA restores the saved transforms and
+performs the inversion itself; the builder only rebinds the moving sources,
+crosses ABBA's task barrier, exports, and moves the resulting raster onto the
+target grid. The paragraphs about chunked inversion and a constant-zero boundary
+policy describe the experimental Python reproduction in `abba_nissl.py`, which is
+gated off and never runs in a normal build.
+
+Along AP the exported volume is sampled by nearest native plane, never blended
+between neighbouring sections; within a plane the change of grid is bilinear.
+Export margin and grid phase are covered under "Native ABBA parity gate".
+
+The confirmed `+1` target offset is an offset within the 589 non-empty Paxinos
+label planes, not an absolute volume index. The 588 registrations are therefore
+written to `nonempty_ap[1:589]`, and `nonempty_ap[0]` receives the documented
+anterior duplicate. Empty leading/trailing AP planes in the 608-plane container
+must not shift the registered anatomy.
+
+## Native ABBA parity gate
+
+An ABBA state is not a self-contained rendered registration project: this
+archive contains the moving-source BDV affine and BigWarp landmarks, but the
+fixed Paxinos `SourceAndConverter` transform was supplied externally when the
+session was opened, and the archive contains no hashes of the original Nissl
+pixels. Consequently, the normal release build now stops with
+`ABBA_NATIVE_PARITY_REQUIRED` rather than silently treating the independent
+Python TPS implementation as scientifically identical. A development-only
+`--experimental-python-render` switch remains for diagnostics; `run_builder.bat`
+does not enable it. Release rendering must use ABBA 0.11/BigWarp's native Java
+transform stack and pass the separate v0.3.0 numerical and visual comparison.
+Defense in depth also prevents `install_channel` from accepting any output
+unless its provenance states `renderer_backend=native_abba_0.11` and
+`native_parity_verified=true`. The experimental renderer writes diagnostics
+only; it cannot install or package Ch03. BUILD_SUMMARY exposes both fields so a
+pre-gate or stale installed channel cannot be mistaken for native output.
 
 The NIfTI output is separately oriented and checked against
 `annotation.nii.gz`. Unknown dimensions or ambiguous orientations terminate the
@@ -147,13 +199,12 @@ Consequently:
 - Ch. 3 is an orientation and visualization aid.
 - Paxinos labels remain authoritative for region assignment.
 - Nissl boundaries must not be interpreted as replacement region boundaries.
-- The source images, ABBA state, transform exports, ImageJ stack, checksums, and
+- The source images, ABBA state, transform reports, checksums, and
   build reports form the registration provenance record.
 
 ## Reproducible GitHub release asset
 
-The complete ABBA/QuPath package is too large for normal Git history. It is
-distributed as a GitHub release asset and described by:
+The compact immutable ABBA ZIP is committed and described by:
 
 ```text
 resources\optional_ch03\nissl_release_asset.json
@@ -165,17 +216,25 @@ The manifest pins:
 - asset filename;
 - direct release download URL;
 - SHA-256 checksum;
-- expected stack filename, shape, and AP order.
+- exact ABBA filename/hash, source range, AP direction and edge policy.
 
-The builder stores verified downloads under:
+The builder stores verified downloads under a directory named after the
+manifest's `release` field:
 
 ```text
-data\release_assets\0.3.0-prerelease\
+data\release_assets\0.3.1-prerelease\
 ```
 
-A partial or checksum-mismatched download is rejected. ZIP extraction is also
-checked for unsafe paths. A package is accepted only if it contains exactly one
-registered ImageJ stack and at least one ABBA state file.
+A checksum mismatch, unsafe/member-mismatched ZIP, unknown action or transform,
+wrong source mapping, a pinned moving plane whose SHA-256 does not match, or
+ambiguous AP direction aborts the build. The historical BDV `project.qpproj`
+path is retained as provenance only and is never opened.
+
+Phase 5 needs no network access and no BrainGlobe Waxholm download: the moving
+planes ship with the repository and are hash-verified before use. A missing
+plane or manifest fails with `MOVING_PLANES_MISSING`, a modified plane with
+`MOVING_PLANES_CORRUPT`, so a changed input stops the build instead of silently
+altering the registered result.
 
 ### Preparing the release asset
 
@@ -185,18 +244,18 @@ This maintainer command creates the immutable ZIP from the completed project:
 .venv\Scripts\python.exe src\nissl_release_asset.py create ^
   --root . ^
   --source resources\optional_ch03\nissl_registration_0_3_0 ^
-  --output paxinos_watson_rat_nissl_registration_0.3.0.zip
+  --output paxinos_watson_rat_nissl_registration_0.3.1.zip
 ```
 
-The command prints the SHA-256 checksum. Upload the ZIP to the GitHub 0.3.0
+The command prints the SHA-256 checksum. Upload the ZIP to the GitHub 0.3.1
 prerelease, then pin its direct download URL and checksum without manual JSON
 editing:
 
 ```cmd
 .venv\Scripts\python.exe src\nissl_release_asset.py pin ^
   --root . ^
-  --asset paxinos_watson_rat_nissl_registration_0.3.0.zip ^
-  --url https://github.com/OWNER/REPOSITORY/releases/download/TAG/paxinos_watson_rat_nissl_registration_0.3.0.zip
+  --asset paxinos_watson_rat_nissl_registration_0.3.1.zip ^
+  --url https://github.com/OWNER/REPOSITORY/releases/download/TAG/paxinos_watson_rat_nissl_registration_0.3.1.zip
 ```
 
 Commit the resulting manifest update before publishing the final source
@@ -240,6 +299,30 @@ reports\nissl_release_asset\
 The final summary states whether the build succeeded, where the atlas was
 installed, whether the Nissl channel was found, which additional references are
 registered, and where detailed reports are located.
+
+## Developer probes
+
+Four read-only entry points isolate one stage of the native path each. None of
+them installs anything or writes to an atlas; they are diagnostic tools, not
+part of a normal build. Each takes the registration package as its argument:
+
+```cmd
+.venv\Scripts\python.exe src\v34_debug_transform_roundtrip.py ^
+  resources\optional_ch03\nissl_registration_0_3_0
+```
+
+| Script | Stage | Report |
+|---|---|---|
+| `v34_debug_transform_roundtrip.py` | state load and save, landmark audit | `transform_roundtrip_diff.json` |
+| `v35_debug_slice_geometry.py` | slice selection, thickness, AP lattice | `slice_geometry_probe.json` |
+| `v36_debug_export_parameters.py` | export parameters against the Z profile | `export_parameter_probe.json` |
+| `v37_debug_export_determinism.py` | bit-reproducibility of the export | `export_determinism_probe.json` |
+
+They run in minutes instead of a full build, which is why the export Z phase and
+the lateral offset were found with them rather than by repeated rebuilding.
+`v35` and `v36` discover Java method names by reflection instead of assuming
+them, so an ABBA API change shows up as a changed listing rather than a silent
+failure.
 
 ## ABBA inspection after a successful build
 
@@ -292,13 +375,107 @@ the affected component.
 
 ## Release acceptance criteria
 
-The 0.3.0 prerelease is ready for publication only after:
+The 0.3.1 prerelease is ready for publication only after:
 
-1. the Nissl ZIP is uploaded as an immutable release asset;
-2. its direct URL and SHA-256 are committed in the manifest;
-3. `run_builder.bat` succeeds from a clean root without a local registration
-   folder;
-4. installation succeeds on a second Windows computer;
-5. Ch. 0 and Ch. 3 have the same AP direction;
-6. representative levels pass visual ABBA QC;
-7. `reports\BUILD_SUMMARY.txt` reports success.
+1. `run_builder.bat` succeeds from a fresh clone, with no manually added files;
+2. installation succeeds on a second Windows computer;
+3. `reports\BUILD_SUMMARY.txt` reports success with no warning beyond the
+   pending-parity notice;
+4. Ch. 0 and Ch. 3 have the same AP direction;
+5. `Native zero-valued registered planes: 0` and coverage status `complete`;
+6. `Registered Nissl alignment` is within the 400 um guard;
+7. representative AP levels pass visual ABBA QC — the anterior bulb, a
+   mid-brain level with hippocampus and ventricles, and the posterior edge;
+8. that judgement is recorded with `v38_record_visual_parity.py`, which sets
+   `visual_parity_status` to `passed` and `release_eligible` to true.
+
+Steps 3 to 6 are checked by the build itself. Step 7 cannot be automated, and
+step 8 exists so its result is written down rather than assumed.
+
+Every registration input ships in the repository: the 588 moving planes and
+`final_for_V_0_3.abba` (476 KB). Criterion 1 is what proves it — a clone must
+build with no release asset, no manual file copying and no Waxholm download.
+
+### Recording the visual decision
+
+Nothing in the build sets `visual_parity_status`; it stays `pending` until a
+person records a decision:
+
+```cmd
+.venv\Scripts\python.exe src\v38_record_visual_parity.py passed ^
+  --reviewer "Your Name" --notes "AP 10-597 checked" --apply
+```
+
+`--apply` writes the decision into the installed atlas through the transactional
+install path, without re-rendering. Omit it to record the decision only and let
+the next build pick it up. `failed` is equally recordable and makes the install
+refuse the channel.
+
+The approval names the `output_content_sha256` of the reconstruction it was
+given for. A later build whose voxels differ produces a different hash, so the
+approval stops applying and the status reverts to `pending` — an approval can
+never carry over to a channel nobody looked at.
+
+### Registration inputs
+
+The 588 moving planes and `final_for_V_0_3.abba` are the authoritative
+registration inputs. Both are tracked in the repository, the planes are verified
+against their per-plane SHA-256 on every build, and the ABBA state against the
+hash in `registration_manifest.json`. Neither is re-derived, and a build that
+finds either changed stops rather than continuing with different data.
+
+## v0.3.1 incremental test build
+
+Version 0.3.1 deliberately starts from the working 0.3.0 prerelease pipeline.
+It does not change the Paxinos annotation, ontology, AP mapping, or validated
+Nissl registration. This first increment only fixes optional-component control:
+`--no-patch-abba` disables both ABBA patches, missing ABBA is a warning unless
+`--require-abba` is supplied, `--without-nissl` is reported accurately, and
+`--non-interactive` suppresses `pause`. Broader preflight, transaction, locking,
+and dependency changes are intentionally deferred until this smaller Windows
+build has been validated.
+
+### v0.3.1 next safety increment
+
+The builder reports free space separately for the volume containing the project,
+the configured BrainGlobe installation, and Windows temporary directories. Low
+space is initially a warning; only a critically full volume stops the build.
+Duplicate volumes are reported once with all of their roles.
+
+The Nissl importer now records per-plane edge-coverage diagnostics comparing the
+non-zero registered signal with the Paxinos label bounds. It does not stretch,
+fill, or re-register the validated images. Installed metadata includes a preferred
+warm-yellow (`#FFD54F`), low-opacity (`0.22`) display hint. This is deliberately a
+client hint: current ABBA versions may still require the converter color and
+opacity to be applied in the ABBA UI until a separately tested loader patch is
+available.
+
+Repeated clean installations no longer accumulate full atlas backups inside the
+BrainGlobe directory (usually on `C:`). Existing and newly created native-atlas
+backups are moved, never deleted, under `backups/native_brainglobe` on the builder
+volume. This preserves rollback material while freeing the installation volume
+for the new atlas and its display channels.
+
+The large per-plane Nissl diagnostic can be reduced to a small text file with:
+
+```cmd
+.venv\Scripts\python.exe src\summarize_nissl_coverage.py --root .
+```
+
+Share `reports\ch03_nissl\NISSL_EDGE_COVERAGE_SUMMARY.txt`; the full JSON is not
+needed for initial edge-gap analysis.
+
+A critically full required volume (below 0.5 GiB) still stops the build to avoid
+partial atlas files. Before this check, legacy full-atlas backups are now moved
+from the BrainGlobe directory to the builder-volume backup tree. If Windows
+`TEMP` remains on a full `C:` drive, it can be redirected for one terminal:
+
+```cmd
+mkdir G:\paxinos_temp
+set "TEMP=G:\paxinos_temp"
+set "TMP=G:\paxinos_temp"
+run_builder.bat
+```
+
+The BrainGlobe installation itself still needs sufficient free space on its
+configured volume; redirecting only `TEMP` does not move the installed atlas.

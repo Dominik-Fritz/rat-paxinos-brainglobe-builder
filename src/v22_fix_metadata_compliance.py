@@ -102,11 +102,11 @@ def fix_metadata(folder: Path) -> dict[str, Any]:
     metadata["atlas_name"] = metadata.get("atlas_name", ATLAS_NAME)
     metadata["title"] = metadata.get(
         "title",
-        "Paxinos-Watson Rat Brain Atlas, provisional BrainGlobe package",
+        "Paxinos-Watson Rat Brain Atlas, BrainGlobe prerelease candidate",
     )
     metadata["description"] = metadata.get(
         "description",
-        "Provisional local BrainGlobe-compatible rat atlas package generated from the Paxinos-Watson digitization included in BlueBrainHeadModels v1.",
+        "Local BrainGlobe-compatible rat atlas package generated from the Paxinos-Watson digitization included in BlueBrainHeadModels v1.",
     )
     metadata["species"] = metadata.get("species", "Rattus norvegicus")
     metadata["atlas_link"] = metadata.get("atlas_link", ZENODO_LINK)

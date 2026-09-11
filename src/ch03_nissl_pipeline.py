@@ -13,14 +13,20 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+import os
+import tempfile
+import sys
 import tarfile
 from typing import Iterable
 
 import nibabel as nib
 import numpy as np
 import tifffile
+from brainglobe_atlasapi import BrainGlobeAtlas
 from brainglobe_atlasapi import config as brainglobe_config
 from scipy import ndimage
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from abba_nissl import NisslBuildError, render_volume, sha256_file as strict_sha256, validate_abba
 
 ROOT = Path(__file__).resolve().parents[1]
 OPTIONAL_DIR = ROOT / "resources" / "optional_ch03"
@@ -48,12 +54,25 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def write_report(update: dict) -> None:
+def write_report(update: dict, drop: Iterable[str] = ()) -> None:
+    """Merge into the persistent Ch03 report, optionally retiring stale keys.
+
+    Merging keeps evidence across stages, but it also carries a previous run's
+    keys forward. `drop` lets a stage retire the ones it has just superseded --
+    a successful render must not leave the last run's native_failure in place.
+    """
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report = json.loads(REPORT_JSON.read_text(encoding="utf-8")) if REPORT_JSON.exists() else {}
+    for key in drop:
+        report.pop(key, None)
     report.update(update)
     report["updated_utc"] = datetime.now(timezone.utc).isoformat()
-    REPORT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    # This file is read back and merged on every call and is now ~0.9 MB. A
+    # direct write that is interrupted leaves truncated JSON, which makes every
+    # later run fail while reading it. Stage beside it, then rename in place.
+    staged = REPORT_JSON.with_suffix(".json.partial")
+    staged.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    staged.replace(REPORT_JSON)
 
 
 def atlas_candidates() -> list[Path]:
@@ -95,12 +114,25 @@ def orient_annotation(labels: np.ndarray, path: Path) -> np.ndarray:
     return np.transpose(labels, tuple(permutation))
 
 
+def registered_target_ap_mapping(labels: np.ndarray) -> tuple[np.ndarray, int]:
+    """Apply the validated +1 offset to the non-empty Paxinos AP sequence."""
+    fixed_ap = np.flatnonzero(np.any(labels != 0, axis=(1, 2)))
+    if fixed_ap.size != 589:
+        raise NisslBuildError(
+            "TARGET_AP_MAPPING", f"expected 589 non-empty Paxinos AP planes, found {fixed_ap.size}"
+        )
+    return fixed_ap[1:], int(fixed_ap[0])
+
+
 def load_package_manifest(package: Path) -> dict:
     path = package / PACKAGE_MANIFEST_NAME
     if not path.is_file():
         raise FileNotFoundError(f"Required package manifest is missing: {path}")
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    required = {"stack_file", "state_file", "stack_order", "target_sequence_offset", "anterior_edge_policy"}
+    required = {"abba_state_file", "abba_state_sha256", "stack_order", "target_sequence_offset",
+                "anterior_edge_policy", "waxholm_atlas_name", "waxholm_dataset_version",
+                "waxholm_brainglobe_package_version", "waxholm_reference_shape_ap_si_lr",
+                "waxholm_orientation", "waxholm_ap_direction"}
     missing = sorted(required - manifest.keys())
     if missing:
         raise ValueError(f"Package manifest is missing fields: {missing}")
@@ -111,7 +143,9 @@ def load_package_manifest(package: Path) -> dict:
         raise ValueError("target_sequence_offset must be 0 or 1 for the accepted 588/589 sequence.")
     if manifest["anterior_edge_policy"] not in {"leave_empty", "duplicate_first_registered_plane"}:
         raise ValueError(f"Invalid anterior_edge_policy: {manifest['anterior_edge_policy']}")
-    for field in ("stack_file", "state_file"):
+    if manifest["waxholm_ap_direction"] != "anterior-to-posterior":
+        raise ValueError("The pinned Waxholm AP direction must be anterior-to-posterior.")
+    for field in ("abba_state_file",):
         candidate = package / str(manifest[field])
         if not candidate.is_file():
             raise FileNotFoundError(f"Manifest file {field} is missing: {candidate}")
@@ -119,26 +153,64 @@ def load_package_manifest(package: Path) -> dict:
 
 
 def inspect_package(package: Path, manifest: dict) -> dict:
-    stack = package / manifest["stack_file"]
-    state = package / manifest["state_file"]
-    with tifffile.TiffFile(stack) as tif:
-        series = tif.series[0]
-        stack_info = {
-            "path": str(stack), "sha256": sha256_file(stack),
-            "shape": [int(v) for v in series.shape], "axes": series.axes,
-            "dtype": str(series.dtype), "is_imagej": bool(tif.is_imagej),
-        }
+    state = package / manifest["abba_state_file"]
+    parsed = validate_abba(state, manifest["abba_state_sha256"])
     result = {
         "package": str(package), "manifest": manifest,
-        "stack": stack_info,
         "state": {"path": str(state), "sha256": sha256_file(state), "bytes": state.stat().st_size},
+        "abba_validation": parsed.report,
     }
     write_report({"package_inventory": result})
     print(f"  Package manifest : {package / PACKAGE_MANIFEST_NAME}")
-    print(f"  Registered stack : {stack.name}  shape={tuple(stack_info['shape'])}")
     print(f"  ABBA state       : {state.name}")
     print(f"  Sequence offset  : {manifest['target_sequence_offset']:+d} target position")
     return result
+
+
+def find_waxholm_source(manifest: dict) -> tuple[Path, dict]:
+    """Download when needed, then resolve only the exactly pinned BrainGlobe atlas."""
+    root = Path(brainglobe_config.get_brainglobe_dir())
+    name = manifest["waxholm_atlas_name"]
+    package_version = manifest["waxholm_brainglobe_package_version"]
+    expected_folder = root / f"{name}_v{package_version}"
+    source_kind = "verified BrainGlobe cache"
+    if not expected_folder.is_dir():
+        print(f"  Waxholm source   : downloading {name} package v{package_version} via BrainGlobe AtlasAPI...")
+        try:
+            downloaded = BrainGlobeAtlas(name, brainglobe_dir=root, check_latest=True)
+        except Exception as exc:
+            raise NisslBuildError(
+                "WHS_NETWORK",
+                f"BrainGlobe could not download {name} v{package_version}. Check network/GIN availability: {exc}",
+            ) from exc
+        atlas = Path(downloaded.brainglobe_dir) / str(downloaded.local_full_name)
+        source_kind = "downloaded and validated by BrainGlobe AtlasAPI"
+        if atlas.name != expected_folder.name:
+            raise NisslBuildError(
+                "WHS_VERSION",
+                f"BrainGlobe supplied {atlas.name}, but this release requires {expected_folder.name}",
+            )
+    else:
+        atlas = expected_folder
+    metadata_path, source = atlas / "metadata.json", atlas / "reference.tiff"
+    if not metadata_path.is_file() or not source.is_file():
+        raise NisslBuildError("WHS_CACHE_CORRUPT", f"incomplete BrainGlobe cache: {atlas}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    observed = str(metadata.get("version", metadata.get("atlas_version", package_version)))
+    if observed != package_version:
+        raise NisslBuildError("WHS_VERSION", f"expected BrainGlobe package v{package_version}, metadata reports {observed}")
+    orientation = str(metadata.get("orientation", "")).lower()
+    if orientation != manifest["waxholm_orientation"]:
+        raise NisslBuildError("WHS_ORIENTATION", f"expected orientation {manifest['waxholm_orientation']}, got {orientation!r}")
+    with tifffile.TiffFile(source) as tif:
+        shape = tuple(tif.series[0].shape)
+    if shape != tuple(manifest["waxholm_reference_shape_ap_si_lr"]):
+        raise NisslBuildError("WHS_SOURCE_SHAPE", f"expected AP/SI/LR {manifest['waxholm_reference_shape_ap_si_lr']}, got {shape}")
+    return source, {"atlas_name": name, "dataset_version": manifest["waxholm_dataset_version"],
+                    "brainglobe_package_version": package_version, "source_kind": source_kind,
+                    "path": str(source), "orientation": orientation,
+                    "sha256": strict_sha256(source), "shape_ap_si_lr": list(shape),
+                    "ap_range": [189, 776], "ap_direction": "anterior-to-posterior"}
 
 
 def resample_abba_canvas(stack: np.ndarray) -> tuple[np.ndarray, str]:
@@ -162,6 +234,38 @@ def resample_abba_canvas(stack: np.ndarray) -> tuple[np.ndarray, str]:
     for plane in range(stack.shape[0]):
         converted[plane] = ndimage.map_coordinates(stack[plane], [grid_si, grid_lr], order=1, mode="nearest", prefilter=False)
     return converted, "centered 19.5-um ABBA canvas sampled on the 40-um Paxinos grid"
+
+
+def measure_edge_coverage(labels: np.ndarray, nissl: np.ndarray) -> dict:
+    """Measure visible Nissl support against label bounds without altering pixels."""
+    planes = []
+    coverages = []
+    for ap in np.flatnonzero(np.any(labels != 0, axis=(1, 2))):
+        label_mask = labels[ap] != 0
+        signal_mask = nissl[ap] > 0
+        label_pixels = int(label_mask.sum())
+        covered = int(np.logical_and(label_mask, signal_mask).sum())
+        coverage = covered / label_pixels if label_pixels else 0.0
+        coverages.append(coverage)
+        label_coords = np.argwhere(label_mask)
+        signal_coords = np.argwhere(signal_mask)
+        label_bbox = [label_coords.min(axis=0).tolist(), label_coords.max(axis=0).tolist()]
+        signal_bbox = ([signal_coords.min(axis=0).tolist(), signal_coords.max(axis=0).tolist()]
+                       if signal_coords.size else None)
+        planes.append({"ap": int(ap), "label_pixels": label_pixels,
+                       "label_pixels_with_nissl_signal": covered,
+                       "coverage_fraction": round(coverage, 6),
+                       "label_bbox_si_lr": label_bbox,
+                       "nissl_signal_bbox_si_lr": signal_bbox})
+    return {
+        "definition": "Fraction of labeled pixels containing non-zero Nissl signal; diagnostic only.",
+        "plane_count": len(planes),
+        "coverage_fraction_min": round(min(coverages), 6) if coverages else None,
+        "coverage_fraction_median": round(float(np.median(coverages)), 6) if coverages else None,
+        "coverage_fraction_max": round(max(coverages), 6) if coverages else None,
+        "planes": planes,
+        "pixels_modified": False,
+    }
 
 
 def import_registered_stack(
@@ -217,6 +321,7 @@ def import_registered_stack(
             "before": int(start), "after": int(fixed_ap.size - start - target_ap.size),
         },
         "spatial_mapping": spatial_mapping, "active_tiff": str(ACTIVE_PATH),
+        "edge_coverage": measure_edge_coverage(labels, volume),
     }
     write_report({"ch03_import": report})
     print(f"  AP mapping       : offset {start:+d}; {target_ap.size} planes -> AP {target_ap[0]}..{target_ap[-1]}")
@@ -224,46 +329,153 @@ def import_registered_stack(
     return report
 
 
-def write_nifti(active: np.ndarray, atlas: Path, name: str) -> Path:
-    annotation = nib.load(str(atlas / "annotation.nii.gz"))
+def write_nifti(active: np.ndarray, reference_atlas: Path, destination_dir: Path,
+                name: str) -> Path:
+    """Save the Ch03 volume using the atlas annotation's authoritative header.
+
+    `reference_atlas` supplies annotation.nii.gz (affine, header, axis order);
+    `destination_dir` receives the file. As one parameter this was unsatisfiable
+    -- the only call site guarded on the staging directory holding
+    annotation.nii.gz, which a fresh mkdtemp never does -- so the orientation
+    check below was dead and an unchecked fallback ran instead.
+    """
+    annotation = nib.load(str(reference_atlas / "annotation.nii.gz"))
     target_shape = tuple(int(v) for v in annotation.shape[:3])
     if target_shape == tuple(active.shape):
         data = active
     elif target_shape == (active.shape[2], active.shape[0], active.shape[1]):
         data = active.transpose(2, 0, 1)
     else:
-        raise ValueError(f"Cannot orient Ch03 {active.shape} to annotation NIfTI {target_shape}: {atlas}")
-    destination = atlas / f"{name}.nii.gz"
+        raise NisslBuildError(
+            "OUTPUT_VALIDATION",
+            f"Cannot orient Ch03 {active.shape} to annotation NIfTI {target_shape}: {reference_atlas}",
+        )
+    destination = destination_dir / f"{name}.nii.gz"
     nib.save(nib.Nifti1Image(data, annotation.affine, annotation.header.copy()), destination)
     return destination
 
 
-def install_channel(import_report: dict) -> list[dict]:
-    active = tifffile.imread(ACTIVE_PATH)
+def validate_install_provenance(import_report: dict) -> tuple[str, bool]:
+    """Allow native test output while keeping visual release approval separate."""
+    backend = import_report.get("renderer_backend")
+    native_verified = import_report.get("native_backend_verified") is True
+    parity = import_report.get("visual_parity_status", "pending")
+    if backend != "native_abba_0.11" or not native_verified:
+        raise NisslBuildError(
+            "NISSL_INSTALL_UNVERIFIED",
+            "refusing to install Ch03: only a verified native_abba_0.11 execution may be installed",
+        )
+    if parity not in {"pending", "passed", "failed"}:
+        raise NisslBuildError("VISUAL_PARITY_STATUS", f"invalid visual_parity_status: {parity!r}")
+    if parity == "failed":
+        raise NisslBuildError("VISUAL_PARITY_FAILED", "native output failed visual validation")
+    return parity, parity == "passed"
+
+
+def _transactional_atlas_install(atlas: Path, active: np.ndarray, import_report: dict) -> dict:
+    """Stage every artifact, validate it, then atomically activate or roll back."""
+    parity, release_eligible = validate_install_provenance(import_report)
     name = "waxholm_anatomy_reference"
-    installed: list[dict] = []
-    for atlas in atlas_candidates():
-        metadata_path = atlas / "metadata.json"
-        if not (metadata_path.is_file() and (atlas / "annotation.tiff").is_file() and (atlas / "annotation.nii.gz").is_file()):
-            continue
-        tiff_path = atlas / f"{name}.tiff"
-        shutil.copy2(ACTIVE_PATH, tiff_path)
-        nifti_path = write_nifti(active, atlas, name)
+    metadata_path = atlas / "metadata.json"
+    destinations = [atlas / f"{name}.tiff", atlas / f"{name}.nii.gz", metadata_path]
+    backup_dir = Path(tempfile.mkdtemp(prefix=".ch03-backup-", dir=atlas))
+    stage_dir = Path(tempfile.mkdtemp(prefix=".ch03-stage-", dir=atlas))
+    existed = {path: path.exists() for path in destinations}
+    try:
+        for path in destinations:
+            if path.exists():
+                shutil.copy2(path, backup_dir / path.name)
+        staged_tiff = stage_dir / f"{name}.tiff"
+        shutil.copy2(ACTIVE_PATH, staged_tiff)
+        with tifffile.TiffFile(staged_tiff) as tif:
+            if tuple(tif.series[0].shape) != TARGET_SHAPE:
+                raise NisslBuildError("OUTPUT_VALIDATION", "staged TIFF shape is invalid")
+        # Header and axis order come from this atlas's annotation; the file is
+        # staged inside the atlas so activation stays a same-volume rename.
+        staged_nifti = write_nifti(active, atlas, stage_dir, name)
+        check = nib.load(str(staged_nifti)); check_shape = tuple(check.shape); check.uncache()
+        if check_shape != tuple(nib.load(str(atlas / "annotation.nii.gz")).shape[:3]):
+            raise NisslBuildError("OUTPUT_VALIDATION", "staged NIfTI shape is invalid")
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         references = metadata.get("additional_references", [])
         if isinstance(references, str): references = [references]
         if name not in references: references.append(name)
         metadata["additional_references"] = references
         metadata["optional_ch03_registration"] = {
-            "installed": True, "release": "0.3.0-prerelease", "reference_name": name,
+            "installed": True, "release": "0.3.1-prerelease", "reference_name": name,
             "stack_order": import_report["stack_order"],
             "target_sequence_offset": import_report["target_sequence_offset"],
-            "interpretation": "Manually BigWarp-registered WHS Nissl visual aid; Paxinos labels remain authoritative.",
+            "renderer_backend": "native_abba_0.11",
+            "native_backend_verified": True,
+            "visual_parity_status": parity,
+            "release_eligible": release_eligible,
+            "interpretation": "Native ABBA/BigWarp-rendered visual aid; Paxinos labels remain authoritative.",
         }
-        metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-        installed.append({"atlas": str(atlas), "tiff": str(tiff_path), "nifti": str(nifti_path)})
-    if not installed:
+        staged_metadata = stage_dir / "metadata.json"
+        staged_metadata.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+        for staged, destination in zip((staged_tiff, staged_nifti, staged_metadata), destinations):
+            os.replace(staged, destination)
+        return {"atlas": str(atlas), "tiff": str(destinations[0]), "nifti": str(destinations[1]),
+                "visual_parity_status": parity, "release_eligible": release_eligible}
+    except Exception:
+        for path in destinations:
+            backup = backup_dir / path.name
+            if backup.exists(): os.replace(backup, path)
+            elif not existed[path]: path.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def install_channel(import_report: dict) -> list[dict]:
+    validate_install_provenance(import_report)
+    active = tifffile.imread(ACTIVE_PATH)
+    eligible = [atlas for atlas in atlas_candidates() if all(
+        (atlas / name).is_file() for name in ("metadata.json", "annotation.tiff", "annotation.nii.gz")
+    )]
+    if not eligible:
+        close_memmap(active)
         raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
+    # Keep a transaction-level snapshot as well as each target's local staging
+    # backup. If activation of a later atlas fails, earlier atlas targets must
+    # not retain a Ch03 result from this failed run.
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix="ch03-install-transaction-", dir=REPORT_DIR))
+    name = "waxholm_anatomy_reference"
+    snapshots: dict[Path, tuple[bool, Path]] = {}
+    try:
+        for index, atlas in enumerate(eligible):
+            snapshot_dir = transaction / str(index)
+            snapshot_dir.mkdir()
+            for destination in (atlas / f"{name}.tiff", atlas / f"{name}.nii.gz", atlas / "metadata.json"):
+                existed = destination.exists()
+                backup = snapshot_dir / destination.name
+                if existed:
+                    shutil.copy2(destination, backup)
+                snapshots[destination] = (existed, backup)
+        installed = [_transactional_atlas_install(atlas, active, import_report) for atlas in eligible]
+    except Exception:
+        # The snapshot lives under reports/ while an installed atlas can sit on
+        # another drive, where os.replace() raises WinError 17 -- inside this
+        # handler that replaced the real installation error. Restore by copy and
+        # never let a rollback problem displace the original exception.
+        rollback_failures = []
+        for destination, (existed, backup) in snapshots.items():
+            try:
+                if existed and backup.exists():
+                    shutil.copy2(backup, destination)
+                elif not existed:
+                    destination.unlink(missing_ok=True)
+            except OSError as rollback_error:
+                rollback_failures.append(f"{destination}: {rollback_error}")
+        if rollback_failures:
+            print("WARNING [CH03_ROLLBACK_INCOMPLETE]: " + "; ".join(rollback_failures),
+                  file=sys.stderr)
+        raise
+    finally:
+        close_memmap(active)
+        shutil.rmtree(transaction, ignore_errors=True)
     write_report({"ch03_install": installed})
     print(f"  Installed targets: {len(installed)}")
     return installed
@@ -281,16 +493,93 @@ def repack_candidate() -> Path:
     return archive
 
 
-def build_from_package(package_path: str) -> int:
+def close_memmap(array: np.ndarray) -> None:
+    """Close a numpy memmap deterministically (required before Windows moves)."""
+    mapping = getattr(array, "_mmap", None)
+    if mapping is not None:
+        mapping.close()
+
+
+def activate_validated_tiff(temporary: Path, destination: Path) -> None:
+    """Validate with a closed TIFF handle, then atomically activate the file."""
+    with tifffile.TiffFile(temporary) as tif:
+        shape = tuple(int(value) for value in tif.series[0].shape)
+        dtype = np.dtype(tif.series[0].dtype)
+    if shape != TARGET_SHAPE or dtype != np.dtype(np.uint16):
+        raise NisslBuildError(
+            "OUTPUT_VALIDATION",
+            f"temporary TIFF must be uint16 {TARGET_SHAPE}, got {dtype} {shape}",
+        )
+    # The context above must be exited before replace(): Windows refuses to
+    # rename an open source file (WinError 32).
+    temporary.replace(destination)
+
+
+def require_scientific_render_readiness(experimental_python_render: bool) -> None:
+    """Prevent an unverified Python reinterpretation from becoming release data."""
+    if experimental_python_render:
+        print("WARNING [EXPERIMENTAL_BIGWARP_RENDER]: using unvalidated Python transform reproduction")
+        return
+    raise NisslBuildError(
+        "ABBA_NATIVE_PARITY_REQUIRED",
+        "SacBigWarp2DRegistration/ThinplateSplineTransform affects source_id 0..587. "
+        "The .abba archive records moving-source BDV affines and landmarks, but not the external "
+        "fixed Paxinos SourceAndConverter pixel-to-world transform or hashes of the original "
+        "whs_nissl_40um_ap_*.tiff pixels. A Python TPS reconstruction therefore cannot be claimed "
+        "to reproduce the curated ABBA display 1:1. Next step: render with the native ABBA 0.11/"
+        "BigWarp Java transform stack against the same installed Paxinos atlas, then validate that "
+        "output against the separate v0.3.0 reference before enabling it for releases.",
+    )
+
+
+def build_from_package(package_path: str, experimental_python_render: bool = False) -> int:
     package = Path(package_path).expanduser().resolve()
     manifest = load_package_manifest(package)
     print("\n  [NISSL PACKAGE]")
     print("  " + "-" * 66)
     inspect_package(package, manifest)
-    report = import_registered_stack(
-        package / manifest["stack_file"], manifest["stack_order"], int(manifest["target_sequence_offset"]),
-        manifest["anterior_edge_policy"],
-    )
+    require_scientific_render_readiness(experimental_python_render)
+    state = validate_abba(package / manifest["abba_state_file"], manifest["abba_state_sha256"])
+    source_path, source_report = find_waxholm_source(manifest)
+    source = tifffile.memmap(source_path)
+    annotation_path = find_annotation_tiff()
+    labels = orient_annotation(tifffile.imread(annotation_path), annotation_path)
+    target_ap_indices, duplicated_target_ap = registered_target_ap_mapping(labels)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    raw = REPORT_DIR / "waxholm_anatomy_reference.raw.partial"
+    temporary_tiff = ACTIVE_PATH.with_suffix(".tiff.partial")
+    raw.unlink(missing_ok=True)
+    temporary_tiff.unlink(missing_ok=True)
+    volume = None
+    try:
+        reconstruction = render_volume(
+            state, source, raw, target_ap_indices, duplicated_target_ap
+        )
+        close_memmap(source)
+        source = None
+        volume = np.memmap(raw, mode="r", dtype=np.uint16, shape=TARGET_SHAPE)
+        tifffile.imwrite(temporary_tiff, volume, bigtiff=True)
+        close_memmap(volume)
+        volume = None
+        activate_validated_tiff(temporary_tiff, ACTIVE_PATH)
+    finally:
+        if source is not None:
+            close_memmap(source)
+        if volume is not None:
+            close_memmap(volume)
+        temporary_tiff.unlink(missing_ok=True)
+        raw.unlink(missing_ok=True)
+    report = {"source": source_report, "reconstruction": reconstruction,
+              "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
+              "authoritative_registration_source": str(state.path),
+              "legacy_registered_stack_used": False,
+              "renderer_backend": "experimental_python_tps",
+              "native_parity_verified": False}
+    write_report({"abba_reconstruction": report})
+    if experimental_python_render:
+        print("  Experimental reconstruction completed for diagnostics only.")
+        print("  It was NOT installed, packaged, or marked as a successful native Nissl channel.")
+        return 0
     install_channel(report)
     archive = repack_candidate()
     print(f"  Candidate archive: {archive}")
@@ -305,6 +594,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     inspect.add_argument("package")
     build = sub.add_parser("build-from-package")
     build.add_argument("package")
+    build.add_argument(
+        "--experimental-python-render", action="store_true",
+        help="Development only: permit the unvalidated Python BigWarp reproduction.",
+    )
     args = parser.parse_args(argv)
     try:
         package = Path(args.package).expanduser().resolve()
@@ -312,7 +605,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.command == "inspect-package":
             inspect_package(package, manifest)
             return 0
-        return build_from_package(str(package))
+        return build_from_package(str(package), args.experimental_python_render)
     except Exception as exc:
         print(f"ERROR: {exc}")
         return 2

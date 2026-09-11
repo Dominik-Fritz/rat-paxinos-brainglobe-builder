@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "visual_parity_status": "passed",
+  "output_content_sha256": "10fbd7b4ce7896f58d63fb7aee6bf83f98bd9d330252577318d8c741f1b75610",
+  "reviewer": "Dominik Fritz",
+  "reviewed_utc": "2026-09-09T13:17:43.702927+00:00",
+  "notes": "Sichtpruefung in ABBA ueber den AP-Bereich mit Ch0 und Ch3: Konturen decken sich mit dem Gewebe und entsprechen der urspruenglichen manuellen Nissl-Registrierung.",
+  "definition": "Human visual validation of the registered Ch03 channel against the Paxinos contours in ABBA. Applies only to the reconstruction whose content hash is named above; any build producing different voxels reverts to pending."
+}

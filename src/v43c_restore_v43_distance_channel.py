@@ -639,6 +639,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"additional_refs={validation.get('additional_references')} "
             f"obsolete_files={validation.get('obsolete_extra_files_present')}"
         )
+        for error in r.get("errors", []):
+            print(f"  ERROR: {error}")
+        for warning in r.get("warnings", []):
+            print(f"  WARNING: {warning}")
     print()
     print("Report:")
     print(project_root / "reports" / REPORT_DIR_NAME / "V43C_FINALIZE_THREE_CHANNEL_ABBA_LAYOUT_REPORT.md")

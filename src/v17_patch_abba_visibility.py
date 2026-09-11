@@ -123,12 +123,38 @@ def discover_abba_installations(explicit: str | None = None) -> list[dict[str, A
     return unique
 
 
+
+def evaluate_patch_results(patch_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Decide whether a patch run passed.
+
+    Every discovered installation this patch applies to must succeed, and at
+    least one must. Files without the expected anchor are a different ABBA
+    layout, not a failure: discovery deliberately scans broadly and therefore
+    also finds copies belonging to unrelated projects. One such source checkout
+    used to fail the whole build.
+
+    If nothing at all is applicable the run still fails -- that would mean ABBA
+    changed its structure, which is exactly what should be noticed.
+    """
+    applicable = [p for p in patch_results if not p.get("not_applicable")]
+    skipped = [p for p in patch_results if p.get("not_applicable")]
+    patched_ok = [p for p in applicable
+                  if (p.get("patched") or p.get("already_patched")) and not p.get("error")]
+    return {
+        "applicable": applicable,
+        "skipped": skipped,
+        "patched_ok": patched_ok,
+        "passed": bool(patched_ok) and len(patched_ok) == len(applicable),
+    }
+
+
 def patch_abba_py(abba_py: Path, dry_run: bool = False) -> dict[str, Any]:
     result: dict[str, Any] = {
         "abba_py": str(abba_py),
         "exists": abba_py.exists(),
         "already_patched": False,
         "patched": False,
+        "not_applicable": False,
         "backup": None,
         "error": None,
         "insert_anchor": None,
@@ -146,7 +172,10 @@ def patch_abba_py(abba_py: Path, dry_run: bool = False) -> dict[str, Any]:
         return result
 
     if "def add_brainglobe_atlases(ij):" not in text:
-        result["error"] = "Could not find def add_brainglobe_atlases(ij)"
+        # A discovered file that does not contain the function this patch edits
+        # is a different ABBA layout, not a failure. A source checkout belonging
+        # to an unrelated project used to fail the whole build this way.
+        result["not_applicable"] = "no def add_brainglobe_atlases(ij); different ABBA layout"
         return result
 
     anchor = "    AtlasChooserCommand = jimport('ch.epfl.biop.atlas.scijava.AtlasChooserCommand')"
@@ -161,7 +190,7 @@ def patch_abba_py(abba_py: Path, dry_run: bool = False) -> dict[str, Any]:
                 idx = i
                 break
         if idx is None:
-            result["error"] = "Could not find AtlasChooserCommand anchor"
+            result["not_applicable"] = "no AtlasChooserCommand anchor; different ABBA layout"
             return result
         result["insert_anchor"] = f"line_{idx+1}"
         lines.insert(idx, PATCH_BLOCK)
@@ -299,7 +328,9 @@ def main() -> int:
         patch_results.append(patch_abba_py(Path(inst["abba_py"]), dry_run=args.dry_run))
         python_probes.append({"root": inst["root"], "probe": run_abba_python_probe(inst.get("python"))})
 
-    passed = bool(selected) and all((p.get("patched") or p.get("already_patched")) and not p.get("error") for p in patch_results)
+    verdict = evaluate_patch_results(patch_results)
+    applicable, skipped = verdict["applicable"], verdict["skipped"]
+    patched_ok, passed = verdict["patched_ok"], verdict["passed"]
 
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -310,6 +341,11 @@ def main() -> int:
         "patch_results": patch_results,
         "python_probes": python_probes,
         "passed": passed,
+        "applicable_count": len(applicable),
+        "patched_count": len(patched_ok),
+        "not_applicable_count": len(skipped),
+        "not_applicable": [{"abba_py": p["abba_py"], "reason": p["not_applicable"]}
+                           for p in skipped],
     }
 
     write_reports(report)
