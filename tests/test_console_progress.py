@@ -108,5 +108,65 @@ class LogTests(unittest.TestCase):
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 50)
 
 
+class ResilienceTests(unittest.TestCase):
+    """A defect in this cosmetic layer must not be able to fail a build.
+
+    The wrapper's exit code is what run_builder.bat branches on, and the filter
+    will first run on machines nobody can debug from here.
+    """
+
+    @staticmethod
+    def _run_with_broken_collapser(exit_code: int) -> subprocess.CompletedProcess:
+        folder = Path(tempfile.mkdtemp())
+        child = folder / "child.py"
+        child.write_text(
+            "import sys\n"
+            "for i in range(20):\n"
+            "    print(f'Reading first plane of (source {i})')\n"
+            f"sys.exit({exit_code})\n",
+            encoding="utf-8")
+        # Break the collapser from outside, the way an unforeseen defect would.
+        driver = folder / "driver.py"
+        driver.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "from src import console_progress as cp\n"
+            "def explode(self, text):\n"
+            "    raise RuntimeError('boom')\n"
+            "cp.Collapser.line = explode\n"
+            "raise SystemExit(cp.main(["
+            "'--label', 'step', '--log', " + repr(str(folder / "out.log")) + ","
+            " '--', sys.executable, " + repr(str(child)) + "]))\n",
+            encoding="utf-8")
+        return subprocess.run([sys.executable, str(driver)],
+                              capture_output=True, text=True)
+
+    def test_a_crash_in_the_filter_keeps_a_passing_build_passing(self):
+        completed = self._run_with_broken_collapser(0)
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("CONSOLE_FILTER", completed.stderr)
+
+    def test_a_crash_in_the_filter_still_reports_a_real_failure(self):
+        self.assertEqual(self._run_with_broken_collapser(4).returncode, 4)
+
+    def test_non_ascii_output_does_not_break_the_run(self):
+        # A user profile with an umlaut is ordinary on the machines this has to
+        # run on, and the console code page there is not UTF-8.
+        folder = Path(tempfile.mkdtemp())
+        child = folder / "child.py"
+        child.write_text(
+            "import sys\n"
+            "sys.stdout.reconfigure(encoding='utf-8')\n"
+            "print('Reading first plane of (C:/Users/M\u00fcller/plane \u00b5m)')\n",
+            encoding="utf-8")
+        log = folder / "out.log"
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "src" / "console_progress.py"),
+             "--label", "step", "--log", str(log), "--", sys.executable, str(child)],
+            capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("M\u00fcller", log.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

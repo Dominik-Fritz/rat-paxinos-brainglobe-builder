@@ -174,6 +174,40 @@ def split_lines(chunk: str, carry: str) -> tuple[list[str], str]:
     return parts[:-1], parts[-1]
 
 
+def filter_stream(process: subprocess.Popen, label: str, log) -> None:
+    collapser = Collapser(label, sys.stdout, sys.stdout.isatty(), plane_total())
+    carry = ""
+    assert process.stdout is not None
+    while True:
+        raw = process.stdout.read(4096)
+        if not raw:
+            break
+        chunk = raw.decode("utf-8", errors="replace")
+        lines, carry = split_lines(chunk, carry)
+        for line in lines:
+            log.write(line + "\n")
+            collapser.line(line)
+        log.flush()
+    if carry:
+        log.write(carry + "\n")
+        collapser.line(carry)
+    collapser.finish()
+
+
+def drain(process: subprocess.Popen, log) -> None:
+    """Copy what is left straight through, once filtering has been abandoned."""
+    if process.stdout is None:
+        return
+    while True:
+        raw = process.stdout.read(4096)
+        if not raw:
+            break
+        text = raw.decode("utf-8", errors="replace")
+        log.write(text)
+        sys.stdout.write(text)
+    sys.stdout.flush()
+
+
 def run(label: str, command: list[str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ, PYTHONUNBUFFERED="1")
@@ -183,24 +217,18 @@ def run(label: str, command: list[str], log_path: Path) -> int:
         stderr=subprocess.STDOUT,
         env=environment,
     )
-    collapser = Collapser(label, sys.stdout, sys.stdout.isatty(), plane_total())
-    carry = ""
-    assert process.stdout is not None
     with log_path.open("w", encoding="utf-8", errors="replace", newline="\n") as log:
-        while True:
-            raw = process.stdout.read(4096)
-            if not raw:
-                break
-            chunk = raw.decode("utf-8", errors="replace")
-            lines, carry = split_lines(chunk, carry)
-            for line in lines:
-                log.write(line + "\n")
-                collapser.line(line)
-            log.flush()
-        if carry:
-            log.write(carry + "\n")
-            collapser.line(carry)
-    collapser.finish()
+        try:
+            filter_stream(process, label, log)
+        except Exception as exc:  # noqa: BLE001 - see below
+            # The exit code of this process decides whether the build fails. A
+            # defect in a cosmetic layer must not be able to do that, and on a
+            # machine this was never run on the plausible causes are mundane:
+            # an odd console encoding, a locale that rejects a character in a
+            # Java path. Say so loudly, then get out of the way.
+            print(f"\nWARNING [CONSOLE_FILTER]: {exc!r}; rest of the output is unfiltered.",
+                  file=sys.stderr, flush=True)
+            drain(process, log)
     return process.wait()
 
 
@@ -221,11 +249,22 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("no command given after --")
 
+    # A Java path under a user profile with an umlaut, written to a console whose
+    # code page cannot represent it, would otherwise raise UnicodeEncodeError in
+    # the middle of a build. Replacing the character is always preferable.
+    try:
+        sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
     slug = re.sub(r"[^a-z0-9]+", "_", args.label.lower()).strip("_") or "step"
     log_path = Path(args.log) if args.log else ROOT / "reports" / "console" / f"{slug}.log"
     try:
         return run(args.label, command, log_path)
     except OSError as exc:
+        # The log could not be opened, or the child could not be started. The
+        # second case is a real failure, but passthrough will surface it with the
+        # child's own exit code rather than this wrapper's.
         print(f"WARNING [CONSOLE_FILTER]: {exc}; running unfiltered.", file=sys.stderr)
         return passthrough(command)
 
