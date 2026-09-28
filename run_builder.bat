@@ -288,7 +288,7 @@ if /I not "%WITH_NISSL%"=="NO" powershell -NoProfile -ExecutionPolicy Bypass -Fi
 if /I "%WITH_NISSL%"=="NO" (
     echo Explicit --without-nissl requested. Building legacy label-only atlas.
 ) else (
-    "%VENV_PY%" "src\native_abba_runtime.py" --verify-api || goto fail
+    "%VENV_PY%" "src\console_progress.py" --label "Verifying ABBA runtime" -- "%VENV_PY%" "src\native_abba_runtime.py" --verify-api || goto fail
     if "!NISSL_PACKAGE!"=="" (
         set "NISSL_PATH_FILE=%BUILDER_ROOT%\reports\nissl_release_asset\resolved_package_path.txt"
         "%VENV_PY%" "src\nissl_release_asset.py" resolve --root "%BUILDER_ROOT%" --path-file "!NISSL_PATH_FILE!" || goto fail
@@ -300,7 +300,7 @@ if /I "%WITH_NISSL%"=="NO" (
         goto fail
     )
     echo Nissl package: !NISSL_PACKAGE!
-    "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!"
+    "%VENV_PY%" "src\console_progress.py" --label "Rendering Nissl channel" -- "%VENV_PY%" "src\native_abba_renderer.py" "!NISSL_PACKAGE!"
     set "NISSL_RENDER_EXIT=!ERRORLEVEL!"
     if not "!NISSL_RENDER_EXIT!"=="0" (
         if /I "!NISSL_REQUIRED!"=="YES" (
