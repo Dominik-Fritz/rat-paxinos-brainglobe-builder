@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""
-V33.9 DeepSeek Full Acronym Import
+"""Import the 977-entry DeepSeek acronym list into the label curation resource.
 
-Read a 977-entry acronym list in V33.8 atlas-name order, lock root, skip dash/REVIEW
-entries, flag duplicate acronym conflicts, and optionally update the label curation
-resource files. Does not touch annotation volumes or structures.json.
+Root stays locked, dash and REVIEW entries are skipped and duplicates are flagged.
+The annotation volumes and structures.json are not touched.
 """
 
 from __future__ import annotations
@@ -46,8 +44,7 @@ def norm_id(value) -> int:
 
 
 def find_project_root() -> Path:
-    # Batch runs from project root after package copy. If run from package folder in Downloads,
-    # still allow read-only installed atlas use, but resources may be missing.
+    # Run from elsewhere, the installed atlas is still readable but resources may be missing.
     return Path.cwd()
 
 
@@ -121,7 +118,7 @@ def read_resource(path: Path) -> Tuple[List[Dict], List[str]]:
 
 
 def write_resource(path: Path, rows: List[Dict], fieldnames: List[str]) -> None:
-    # Preserve all existing columns; ensure required ones exist.
+    # Keep all existing columns and add any missing required ones.
     for col in RESOURCE_COLUMNS:
         if col not in fieldnames:
             fieldnames.append(col)
@@ -156,9 +153,9 @@ def find_deepseek_input(project_root: Path) -> Path:
 
 
 def strip_code_fence(text: str) -> str:
-    # If pasted chat contains code fences, use the longest fenced block.
+    # Accept the list inside a Markdown code block; use the longest one.
     blocks = re.findall(r"```(?:[a-zA-Z0-9_-]+)?\s*(.*?)```", text, flags=re.S)
-    # Also tolerate double backticks, as some chats mangle Markdown.
+    # Tolerate double backticks.
     blocks += re.findall(r"``\s*(.*?)``", text, flags=re.S)
     if blocks:
         return max(blocks, key=len)
@@ -172,15 +169,15 @@ def parse_acronyms(raw_text: str) -> List[str]:
         s = line.strip().strip("`").strip()
         if not s:
             continue
-        # Strip markdown bullets accidentally copied.
+        # Drop Markdown bullets.
         s = re.sub(r"^[\-•*]\s+", "", s).strip()
-        # Ignore obvious prose/table lines if user pasted a whole chat.
+        # Skip prose and table lines around the list.
         if s.startswith("|") or s.lower().startswith(("benutzer:", "assistent:", "hier ", "das ", "die ", "quelle", "einträge", "#")):
             continue
-        # Keep single acronym-ish token or dash marker. Avoid full sentences.
+        # Keep a single acronym-like token or a dash, never a sentence.
         if len(s.split()) > 1 and s not in DASH_MARKERS:
             continue
-        # Remove weird trailing punctuation from copied code block.
+        # Strip trailing punctuation.
         s = s.rstrip("`").strip()
         lines.append(s)
     return lines
@@ -264,7 +261,7 @@ def main() -> int:
             else:
                 proposed_by_id[sid] = acro
 
-    # Duplicate detection among non-empty proposals, including root after lock.
+    # Detect duplicates among non-empty proposals, root included.
     counts = Counter(a for a in proposed_by_id.values() if a)
     duplicate_groups = {a: [] for a, c in counts.items() if c > 1}
     if duplicate_groups:
@@ -315,8 +312,8 @@ def main() -> int:
                 approved_import_rows.append({**base, "decision": "approved"})
                 continue
             if not ds_acro:
-                # Keep existing row as-is, but ensure it is not accidentally approved by this import.
-                # If it was already approved by prior curation, leave it approved. The dash means no new evidence.
+                # A dash brings no new evidence: the row stays as it is, approved only
+                # if it already was.
                 dash_rows.append({**base, "decision": "dash_or_review_no_change"})
                 continue
             if ds_acro in duplicate_groups:
@@ -332,7 +329,6 @@ def main() -> int:
                 })
                 duplicate_conflict_rows.append({**base, "decision": "duplicate_conflict_pending"})
                 continue
-            # Safe non-dash, non-duplicate import.
             res.update({
                 "paxinos_name": name,
                 "proposed_acronym": ds_acro,
@@ -356,7 +352,6 @@ def main() -> int:
     applied = False
     backups = []
     if args.mode == "apply-resource" and not errors:
-        # Back up both resource files.
         stamp = now_stamp()
         txt_path = resource_csv.with_name("Paxinos_Watson_Labels_Acronyms.txt")
         bak_csv = resource_csv.with_suffix(resource_csv.suffix + f".before_v33_9_{stamp}.bak")
@@ -370,7 +365,6 @@ def main() -> int:
         write_txt_resource(txt_path, updated_resource_rows)
         applied = True
 
-    # Outputs
     def write_csv(name: str, rows: List[Dict]):
         path = report_dir / name
         if rows:
