@@ -1,8 +1,4 @@
-"""Builder-local ABBA 0.11 runtime validation and PyImageJ startup.
-
-No transform is evaluated in Python.  This module only establishes the isolated
-JVM and verifies the exact Java API used by the vendored ABBA package.
-"""
+"""Start the builder's own ABBA 0.11 runtime and check the Java API it relies on."""
 from __future__ import annotations
 
 import argparse
@@ -49,10 +45,8 @@ VENDORED_JAVA_DEPENDENCIES = (
     "org.janelia.saalfeldlab:n5-zarr:1.5.1",
     "org.janelia.saalfeldlab:n5-universe:2.3.0",
 )
-# ABBA-Python 0.11.0's Python helper declares realtransform 4.0.3, but the
-# released ABBA 0.11.0 Fiji installation actually ships 4.0.4.  This library
-# evaluates the saved ThinplateSplineTransform and its iterative inverse, so
-# reproducing the release runtime takes precedence over the stale helper pin.
+# ABBA-Python 0.11.0 pins realtransform 4.0.3, but the ABBA 0.11.0 Fiji release
+# ships 4.0.4, which evaluates the saved TPS and its inverse. Match the release.
 JAVA_DEPENDENCY_OVERRIDES = {
     "net.imglib2:imglib2-realtransform": {
         "vendored_python_coordinate": "net.imglib2:imglib2-realtransform:4.0.3",
@@ -90,11 +84,8 @@ class NativeRuntimeError(RuntimeError):
 @dataclass(frozen=True)
 class RuntimePaths:
     root: Path = ROOT / "data/native_abba_runtime"
-    # brainglobe/ and reports/ used to be pinned to the project ROOT regardless of
-    # `root`, so a temporary-rooted instance still wrote its failure report into
-    # the live reports/native_abba directory and contaminated real build evidence.
-    # A caller that supplies its own runtime root wants a self-contained sandbox;
-    # the builder keeps the default root and therefore the project locations.
+    # A caller with its own runtime root gets a self-contained sandbox; the builder
+    # keeps the default root and with it the project's brainglobe/ and reports/.
     project_root: Path | None = None
 
     @property
@@ -313,11 +304,9 @@ def configure_jgo(paths: RuntimePaths) -> Path:
 
 
 def configure_maven_settings(paths: RuntimePaths) -> Path:
-    """Activate the external repositories required by ABBA's pinned transitives.
+    """Write the Maven repository profile that ABBA's pinned dependencies need.
 
-    jgo 1.0.6 does not reliably propagate its rc repositories to every Maven
-    resolution on Windows.  A builder-local Maven settings profile is therefore
-    the authoritative repository configuration.
+    jgo 1.0.6 does not reliably pass its own repositories to Maven on Windows.
     """
     paths.maven_settings.parent.mkdir(parents=True, exist_ok=True)
     repositories = "\n".join(
@@ -431,11 +420,9 @@ WORK_DIR_PREFIXES = ("native-render-", "native-roundtrip-", "native-geometry-",
 
 
 def release_work_dir(work: Path) -> dict:
-    """Remove a run's scratch directory, reporting what could not be removed.
+    """Remove a run's scratch directory and report whatever could not be removed.
 
-    Each run materializes 588 planes (~294 MB) here. The JVM may still hold
-    Bio-Formats handles at finally-time, so removal can fail; ignore_errors=True
-    alone hid that and leaked a directory per run.
+    The JVM may still hold Bio-Formats handles, and each run leaves ~294 MB here.
     """
     shutil.rmtree(work, ignore_errors=True)
     if not work.exists():
@@ -446,11 +433,7 @@ def release_work_dir(work: Path) -> dict:
 
 
 def sweep_stale_work_dirs(temporary: Path, keep: Path | None = None) -> dict:
-    """Remove scratch directories this builder left behind in earlier runs.
-
-    Scoped to the builder's own temporary directory and its own prefixes; the
-    JVM's hsperfdata_/nativelib-loader entries are never touched.
-    """
+    """Remove scratch directories left by earlier runs; JVM entries such as hsperfdata_ stay."""
     removed, failed = [], []
     if not temporary.is_dir():
         return {"removed": [], "failed": []}
@@ -465,11 +448,10 @@ def sweep_stale_work_dirs(temporary: Path, keep: Path | None = None) -> dict:
 
 
 def effective_brainglobe_dir() -> dict:
-    """Report where BrainGlobe actually reads and writes atlases.
+    """Report where BrainGlobe really reads and writes atlases.
 
-    RuntimePaths exports BRAINGLOBE_DIR, but brainglobe-atlasapi resolves its
-    directory from its own config file and ignores the environment. Reporting
-    only the exported path implied a builder-local isolation that does not hold.
+    brainglobe-atlasapi takes its directory from its own config file and ignores
+    the exported BRAINGLOBE_DIR.
     """
     try:
         from brainglobe_atlasapi import config
