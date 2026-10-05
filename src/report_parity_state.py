@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""Print the recorded Ch03 visual-parity state as a single token.
+"""Print the recorded Ch03 visual-parity state: PASSED, FAILED or PENDING.
 
-run_builder.bat used to announce "release eligibility remains false" after every
-successful Nissl render, regardless of what had actually been recorded. Once a
-reviewer had signed off, the console contradicted the report it had just
-written. The batch has no JSON reader, so it asks here instead.
-
-Output is exactly one of:
-
-    PASSED   visual parity recorded as passed and the atlas is release eligible
-    FAILED   visual parity recorded as failed
-    PENDING  no decision applies to this reconstruction, or no report exists
-
-Exit status is always 0: an absent or unreadable report is a legitimate PENDING,
-not an error, and must never fail a build.
+run_builder.bat reads this token because it cannot parse JSON. The exit code is
+always 0; a missing report simply means PENDING.
 """
 from __future__ import annotations
 

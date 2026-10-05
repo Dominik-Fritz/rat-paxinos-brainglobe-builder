@@ -1,28 +1,9 @@
 #!/usr/bin/env python3
-"""Run a build step and collapse its per-item log spam into a progress line.
+"""Run a build step and collapse its per-slice log output into one progress line.
 
-The native ABBA stages print one line per slice and one line per source from
-inside the Java jars -- "Action registered in observer: ..." from
-ImageToAtlasRegister and "Reading first plane of (...)" from
-bigdataviewer-biop-tools. With 588 slices that is thousands of lines scrolling
-past, which hides the few lines that matter. The jars cannot be changed, so the
-output is filtered here instead.
-
-Two properties keep this from becoming a way to lose errors:
-
-* every line is written verbatim to reports/console/<label>.log, so nothing is
-  discarded -- the noise becomes a diagnostic artefact instead of scrollback;
-* only lines matching a known noise pattern are collapsed. Anything else is
-  passed straight through. The pattern table is an allowlist of noise, not a
-  denylist of signal, so if ABBA rewords a message the line simply becomes
-  visible again rather than silently vanishing.
-
-The counted noise lines are themselves the progress signal: one
-"Reading first plane of" per source means counting them measures the export.
-No percentage is shown unless the denominator is actually known, because a made
-up percentage is worse than none.
-
-Exit status is the child's, so the caller's ERRORLEVEL handling is unaffected.
+Every line still goes verbatim to reports/console/<label>.log. Only lines that
+match a known noise pattern are collapsed; everything else is printed, and the
+child's exit code is returned unchanged.
 """
 from __future__ import annotations
 
@@ -38,21 +19,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "resources" / "optional_ch03" / "whs_nissl_slices_manifest.json"
 
-# (regex, shown label, whether the plane count is the denominator)
-#
-# Deliberately not anchored to the start of the line: the jars print through
-# several paths and a line may carry a logger or class prefix. Anchoring here
-# would silently stop matching and put the spam straight back on the console.
+# (regex, shown label, whether the plane count is the denominator).
+# Not anchored: the jars may prefix a line with a logger or class name.
 NOISE_PATTERNS: tuple[tuple[str, str, bool], ...] = (
     (r"Reading first plane of\b", "Reading source planes", True),
     (r"Action (registered|removed) in observer\b", "Restoring slice actions", False),
     (r"Action \[", "Restoring slice actions", False),
 )
 
-# A noise pattern can be too generous -- "Action [" also matches
-# "Action [RegisterSliceAction] failed". Any line carrying one of these words is
-# printed whatever else it matches, because the whole point of collapsing the
-# per-slice chatter is to make lines like these findable.
+# Lines with any of these words are always printed, even if a noise pattern matches.
 SIGNAL_WORDS = re.compile(
     r"(?i)\b(fail(ed|ure)?|error|exception|warn(ing)?|cannot|can't|unable|abort|"
     r"invalid|missing|refus|denied|timeout|traceback)\b"
@@ -60,12 +35,7 @@ SIGNAL_WORDS = re.compile(
 
 
 def plane_total() -> int | None:
-    """The pinned plane count, which is the denominator for per-source lines.
-
-    Taken from the manifest that defines the planes, so the bar cannot drift from
-    what is actually exported. plane_count is the manifest's own declaration;
-    len(planes) is only a fallback, and planes is a mapping keyed by source id.
-    """
+    """Plane count from the pinned manifest, the denominator for per-source lines."""
     try:
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -95,7 +65,6 @@ class Collapser:
         self.last_drawn = 0.0
         self.dirty = False
 
-    # -- output ------------------------------------------------------------
     def _elapsed(self) -> str:
         seconds = int(time.monotonic() - self.started)
         return f"{seconds // 60}m{seconds % 60:02d}s"
@@ -120,12 +89,10 @@ class Collapser:
         self.last_drawn = now
         text = self._progress_text()
         if self.interactive:
-            # Pad to clear a previously longer line; \r alone leaves remnants.
+            # Pad so a shorter line fully covers the previous one.
             self.stream.write("\r" + text.ljust(self.BAR_WIDTH + 48)[:118])
         else:
-            # Piped or logged output: no carriage-return animation, one line per
-            # redraw would be its own kind of spam, so only the final state is
-            # written, by finish().
+            # Piped output gets no \r animation; finish() writes the final state once.
             return
         self.stream.flush()
         self.dirty = True
@@ -143,7 +110,6 @@ class Collapser:
         self.current = None
         self.dirty = False
 
-    # -- input -------------------------------------------------------------
     def line(self, text: str) -> None:
         stripped = text.strip()
         if not SIGNAL_WORDS.search(stripped):
@@ -195,7 +161,7 @@ def filter_stream(process: subprocess.Popen, label: str, log) -> None:
 
 
 def drain(process: subprocess.Popen, log) -> None:
-    """Copy what is left straight through, once filtering has been abandoned."""
+    """Pass the remaining output through unfiltered."""
     if process.stdout is None:
         return
     while True:
@@ -220,12 +186,9 @@ def run(label: str, command: list[str], log_path: Path) -> int:
     with log_path.open("w", encoding="utf-8", errors="replace", newline="\n") as log:
         try:
             filter_stream(process, label, log)
-        except Exception as exc:  # noqa: BLE001 - see below
-            # The exit code of this process decides whether the build fails. A
-            # defect in a cosmetic layer must not be able to do that, and on a
-            # machine this was never run on the plausible causes are mundane:
-            # an odd console encoding, a locale that rejects a character in a
-            # Java path. Say so loudly, then get out of the way.
+        except Exception as exc:
+            # This exit code decides whether the build fails, so a defect in a
+            # cosmetic layer must never cause that.
             print(f"\nWARNING [CONSOLE_FILTER]: {exc!r}; rest of the output is unfiltered.",
                   file=sys.stderr, flush=True)
             drain(process, log)
@@ -233,7 +196,7 @@ def run(label: str, command: list[str], log_path: Path) -> int:
 
 
 def passthrough(command: list[str]) -> int:
-    """Used when filtering itself fails: the build must not depend on cosmetics."""
+    """Run the command without filtering."""
     return subprocess.call(command)
 
 
@@ -249,11 +212,10 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("no command given after --")
 
-    # A Java path under a user profile with an umlaut, written to a console whose
-    # code page cannot represent it, would otherwise raise UnicodeEncodeError in
-    # the middle of a build. Replacing the character is always preferable.
+    # A non-ASCII character in a Java path must not raise UnicodeEncodeError on a
+    # console whose code page cannot show it.
     try:
-        sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
+        sys.stdout.reconfigure(errors="replace")
     except (AttributeError, ValueError):
         pass
 
@@ -262,9 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(args.label, command, log_path)
     except OSError as exc:
-        # The log could not be opened, or the child could not be started. The
-        # second case is a real failure, but passthrough will surface it with the
-        # child's own exit code rather than this wrapper's.
+        # The log could not be opened or the child did not start; passthrough
+        # reports the child's own exit code.
         print(f"WARNING [CONSOLE_FILTER]: {exc}; running unfiltered.", file=sys.stderr)
         return passthrough(command)
 

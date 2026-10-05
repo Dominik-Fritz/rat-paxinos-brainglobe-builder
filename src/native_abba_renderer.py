@@ -1,8 +1,7 @@
-"""Native ABBA 0.11/BigWarp Ch03 renderer.
+"""Render the Ch03 Nissl channel natively in ABBA 0.11.
 
-The only spatial transforms evaluated here are Java transforms restored by ABBA.
-Python is limited to deterministic source rebinding, array transfer, AP placement,
-and transactional file/report handling.
+Every spatial transform is evaluated by ABBA in Java; Python only rebinds the
+sources, moves arrays and places planes on the atlas AP grid.
 """
 from __future__ import annotations
 
@@ -29,28 +28,21 @@ import native_abba_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_SHAPE = (608, 286, 409)  # AP, SI, LR
 VOXEL_SIZE_MM = 0.04
-# The saved BigWarp registrations live on a coronal canvas centred at world
-# LR=0/SI=0 (registration px=-9.4, py=-6.56).  BrainGlobe has no origin field,
-# so centre the target voxel *centres* explicitly. This same origin is supplied
-# to the fixed ABBA Source and to post-export sampling; changing only one side
-# caused the previous large right/down displacement.
+# The BigWarp registrations sit on a coronal canvas centred at LR=0/SI=0
+# (px=-9.4, py=-6.56). BrainGlobe has no origin field, so the voxel centres are
+# placed explicitly, and the fixed source and the resampling must share them.
 TARGET_ORIGIN_XYZ_MM = (
     -((TARGET_SHAPE[2] - 1) * VOXEL_SIZE_MM) / 2.0,
     -((TARGET_SHAPE[1] - 1) * VOXEL_SIZE_MM) / 2.0,
     0.0,
 )
 LANDMARK_TOLERANCE_MM = 1e-9
-# ABBA derives the export box from slice boundaries, putting its Z grid half a
-# voxel off the slice centres. At margin 40 um that emptied 152/589 planes and
-# left the rest at 0.485 of source intensity. Only odd multiples of the half
-# voxel restore phase 0: measured at 0/20/40/60 um, 0 and 40 behave alike (a
-# whole voxel apart), 20 drops the last registered section off the stack, and 60
-# gives phase 0, 0.965 intensity and all 588 target planes covered.
-# See reports/native_abba/export_parameter_probe*.json.
+# ABBA builds its export box from the slice boundaries, which leaves the Z grid
+# half a voxel off the slice centres. 60 um restores the phase and, unlike 20 um,
+# keeps the last section inside the stack.
 NATIVE_EXPORT_MARGIN_Z_UM = 60.0
-# ABBA recomputes interval_min/max from the open fixed source, so bounds are
-# informative, not a gate. Exact float equality flagged all 588 sources over
-# ~2e-15 mm of last-ulp noise once the fixed source left origin zero.
+# ABBA recomputes the bounds from the fixed source, so they are informative only,
+# and float noise in the last digits must not count as a change.
 BOUNDS_TOLERANCE_MM = 1e-9
 
 
@@ -71,7 +63,7 @@ def classify_native_failure(exc: BaseException) -> NisslBuildError:
 
 
 def _signal_stats(plane: np.ndarray) -> dict:
-    """Cheap, deterministic intensity evidence; never modifies source pixels."""
+    """Per-plane intensity statistics; never modifies pixels."""
     finite = np.asarray(plane)
     nonzero = finite[finite != 0]
     return {
@@ -86,8 +78,7 @@ def _signal_stats(plane: np.ndarray) -> dict:
 
 MOVING_PLANE_MANIFEST = ROOT / "resources/optional_ch03/whs_nissl_slices_manifest.json"
 MOVING_PLANE_DIR = ROOT / "resources/optional_ch03/whs_nissl_slices_paxinos_40um_ap"
-# 255 * 257 == 65535. One constant factor for all planes, so relative intensity
-# between planes is untouched: a range mapping, not per-slice normalization.
+# 255 * 257 == 65535. One factor for every plane keeps relative intensities intact.
 UINT8_TO_UINT16_SCALE = 257
 
 
@@ -101,11 +92,9 @@ def content_sha256_of(volume: np.ndarray) -> str:
 
 
 def resolve_visual_parity(content_sha256: str) -> dict:
-    """Resolve the recorded visual-parity decision for this exact reconstruction.
+    """Return the recorded visual-parity decision if it was made for these voxels.
 
-    Visual validation is a human judgement, so nothing in the build sets it. An
-    approval names the content hash it was given for; a later build whose voxels
-    differ therefore falls back to pending instead of inheriting the decision.
+    The approval names the content hash it was given for; any other result stays pending.
     """
     absent = {"visual_parity_status": "pending", "release_eligible": False,
               "visual_parity_approval": {"recorded": False, "applies_to_this_build": False}}
@@ -161,11 +150,7 @@ def _load_moving_plane_manifest() -> dict:
 
 
 def _moving_source_provenance(package_manifest: dict, plane_manifest: dict) -> dict:
-    """Describe the moving data without needing the Waxholm package on disk.
-
-    The pinned planes are the registration's input, so the BrainGlobe package
-    supplies no pixels; its identifiers only record where the export came from.
-    """
+    """Describe the moving data; the Waxholm package itself is not needed."""
     digest = hashlib.sha256()
     for source_id in range(588):
         name = f"whs_nissl_40um_ap_{source_id + 189}.tiff"
@@ -191,13 +176,10 @@ def _moving_source_provenance(package_manifest: dict, plane_manifest: dict) -> d
 
 
 def _single_plane_tiffs(folder: Path) -> tuple[list[Path], list[dict]]:
-    """Materialize the planes the saved registration was built against.
+    """Write out the pinned moving planes the saved registration was made on.
 
-    The state's QuPath project pointed at an export already resampled onto the
-    Paxinos 40 um AP grid, so these are pinned in resources/ rather than
-    re-derived from the raw 39 um Waxholm volume. That re-derivation was
-    displaced 22-25 voxels in LR -- varying with AP, so not correctable
-    arithmetically -- and produced the ~880 um offset in the built atlas.
+    Re-deriving them from the raw 39 um Waxholm volume puts them 22-25 voxels off
+    in LR, by a different amount at every AP level.
     """
     planes = _load_moving_plane_manifest()["planes"]
     folder.mkdir(parents=True, exist_ok=True)
@@ -248,7 +230,7 @@ def _portable_opener(original: dict, path: Path) -> dict:
 
 
 def build_rebound_state(state_path: Path, plane_paths: list[Path], destination: Path) -> dict:
-    """Replace the historical QuPath loader while preserving ABBA actions/affines byte-for-byte."""
+    """Swap the QuPath loader for the pinned TIFFs; ABBA actions and affines stay byte-identical."""
     if len(plane_paths) != 588:
         raise NisslBuildError("SOURCE_REBINDING", f"expected 588 explicit planes, got {len(plane_paths)}")
     runtime.inspect_state(state_path)
@@ -264,9 +246,8 @@ def build_rebound_state(state_path: Path, plane_paths: list[Path], destination: 
             raise NisslBuildError("SOURCE_REBINDING", f"unexpected BDV viewsetup mapping: {setup_ids[:3]}..{setup_ids[-3:]}")
         if max(setup_ids) >= len(openers):
             raise NisslBuildError("SOURCE_REBINDING", f"viewsetup {max(setup_ids)} exceeds {len(openers)} XML openers")
-        # The historical dataset has 998 setups; sources.json selects exactly
-        # setups 197..784. Replace every opener so no lazy access can ever
-        # reach QuPath, while binding the selected setups explicitly by ID.
+        # The dataset has 998 setups and sources.json selects 197..784. Every opener
+        # is replaced so nothing can fall back to QuPath.
         rebound = [_portable_opener(opener, plane_paths[0]) for opener in openers]
         for source_id, setup_id in enumerate(setup_ids):
             rebound[setup_id] = _portable_opener(openers[setup_id], plane_paths[source_id])
@@ -408,7 +389,7 @@ def _bounds_delta(expected: dict, observed: dict) -> float | None:
 
 def _verify_transform_roundtrip(authoritative: Path, saved: Path,
                                 diff_path: Path | None = None) -> dict:
-    """Prove native state_load/state_save retained the BigWarp TPS deformation."""
+    """Check that state_load/state_save kept the BigWarp TPS deformation."""
     expected = _registration_fingerprints(authoritative)
     observed = _registration_fingerprints(saved)
     if len(expected) != 588 or len(observed) != 588:
@@ -506,10 +487,8 @@ def _verify_transform_roundtrip(authoritative: Path, saved: Path,
 
 def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Path,
                                      diff_path: Path | None = None) -> dict:
-    # ABBAStateSaveCommand reports failure rather than overwriting, so once the
-    # first build had created this artifact every later build died here before
-    # rendering. Confirmed by A/B run on less free disk. The file is regenerated
-    # evidence for the current run, never an input.
+    # ABBAStateSaveCommand fails rather than overwrite. The file is evidence for
+    # this run only, never an input.
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.unlink(missing_ok=True)
     saved = abba.state_save(_java_file(destination))
@@ -523,12 +502,7 @@ def _save_and_verify_state_roundtrip(abba, authoritative: Path, destination: Pat
 
 def _collect_state_diagnostics(abba, authoritative: Path, destination: Path,
                                diff_path: Path | None = None) -> tuple[dict, dict, list[str]]:
-    """Collect non-rendering audits without turning them into a build gate.
-
-    Wrapper normalization is accepted by the landmark-aware roundtrip check.
-    A genuine TPS/type-chain mismatch remains fatal; unavailable optimizer
-    accessors are reported without blocking native rendering.
-    """
+    """Run the audits that do not render; only a real TPS or transform-type mismatch is fatal."""
     warnings = []
     roundtrip = _save_and_verify_state_roundtrip(abba, authoritative, destination, diff_path)
     try:
@@ -547,7 +521,7 @@ SCALAR_JAVA_RETURN_TYPES = {
 
 
 def _slice_scalar_getters(slice_source) -> list[str]:
-    """Discover the zero-argument scalar getters SliceSources really exposes."""
+    """Zero-argument scalar getters that SliceSources actually exposes."""
     names = set()
     for method in slice_source.getClass().getMethods():
         if int(method.getParameterCount()) != 0:
@@ -561,15 +535,10 @@ def _slice_scalar_getters(slice_source) -> list[str]:
 
 
 def _audit_native_slice_state(abba) -> dict:
-    """Verify the restored slice lattice through the API ABBA actually has.
+    """Check the restored slices: 588, each registered, evenly spaced along the slicing axis.
 
-    The previous audit called getTolerance()/getMaxIteration(); neither exists
-    in ABBA 0.11, so it raised on every build and the slice state went
-    unverified. Reflection shows no optimizer values on the class at all, hence
-    iterative_inverse_settings_available is reported as False.
-
-    Checked here is the invariant the export depends on: 588 slices, each with a
-    registration, on a uniformly spaced slicing axis.
+    ABBA 0.11 exposes no tolerance or iteration count for the inverse solver, so
+    those are reported as unavailable.
     """
     slices = list(abba.mp.getSlices())
     if len(slices) != 588:
@@ -657,19 +626,16 @@ def _find_multipositioner(module, fallback):
                 pending.extend(list(item))
             except (TypeError, AttributeError):
                 pass
-    # Some ABBA builds mutate the currently opened positioner and expose only
-    # a success output. Accept that only when it really contains all slices.
+    # Some ABBA builds update the open positioner and only report success.
     if fallback is not None and int(fallback.getSlices().size()) == 588:
         return fallback
     keys = [str(key) for key in module.getOutputs().keySet()]
     raise NisslBuildError("NATIVE_STATE_LOAD", f"ZIP import returned no MultiSlicePositioner; outputs={keys}")
 
 def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
-    """Resample the native BDV raster onto the fixed atlas voxel centres.
+    """Resample ABBA's export onto the fixed atlas voxel centres.
 
-    ABBA's native export is cropped and may start between fixed-atlas voxel
-    centres.  The TPS has already been evaluated by Java at this point; this
-    step only performs an explicit linear change of sampling grid.
+    The TPS has already been applied in Java; this is a linear change of sampling grid.
     """
     source = sac.getSpimSource()
     rai = source.getSource(0, 0)
@@ -703,9 +669,8 @@ def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
         )
     target_origin_xyz = np.asarray(TARGET_ORIGIN_XYZ_MM, dtype=np.float64)
     starts_xyz = (matrix[:, 3] - target_origin_xyz) / expected_scale_mm
-    # Decimal millimetre translations such as -8.14 cannot be represented
-    # exactly in binary. Snap only values already numerically equal to an
-    # integer voxel; preserve genuine half-voxel offsets for interpolation.
+    # Millimetre values such as -8.14 are not exact in binary: snap values that are
+    # numerically whole voxels, keep real half-voxel offsets.
     nearest = np.rint(starts_xyz)
     starts_xyz = np.where(np.isclose(starts_xyz, nearest, rtol=0, atol=1e-9), nearest, starts_xyz)
     starts = starts_xyz[::-1]  # AP, SI, LR
@@ -716,11 +681,8 @@ def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
             "target_origin_xyz_mm": list(TARGET_ORIGIN_XYZ_MM),
             "native_start_ap_si_lr_voxels": starts.tolist(),
         })
-        # Stage-2 evidence: the Z profile of ABBA's own export, recorded before
-        # Python places anything on the target grid.  A plane that is already
-        # all-zero here was never rendered by the native export; a non-empty
-        # plane that still yields an all-zero target plane was lost in SI/LR
-        # sampling.  Without this the two causes are indistinguishable.
+        # Z profile of ABBA's own export, before Python places anything. It tells a
+        # plane ABBA never rendered apart from one lost in the SI/LR resampling.
         diagnostics["native_plane_intensity_diagnostics"] = [
             {"native_ap_index": index,
              "native_ap_world_mm": float(matrix[2, 3] + index * expected_scale_mm),
@@ -739,12 +701,9 @@ def _source_to_ap_si_lr(ij, sac, diagnostics: dict | None = None) -> np.ndarray:
             f"native source {source_ap_si_lr.shape} at AP/SI/LR origin {starts.tolist()} misses {TARGET_SHAPE}",
         )
 
-    # Target voxel i is at its explicit atlas world origin + 0.04*i; source
-    # voxel j is at 0.04*j+translation. Registered histology sections are a
-    # discrete AP sequence: never blend neighbouring sections along AP. Select
-    # the nearest native Z plane, then interpolate only inside its SI/LR plane.
-    # The native export has one-voxel Z margins so the first and last registered
-    # section remain addressable after nearest-plane selection.
+    # Target voxel i sits at origin + 0.04*i, source voxel j at 0.04*j + translation.
+    # Sections are a discrete AP sequence: take the nearest native Z plane and
+    # interpolate within SI/LR only, never between neighbouring sections.
     from scipy.ndimage import affine_transform
     target = np.zeros(TARGET_SHAPE, dtype=source_ap_si_lr.dtype)
     identity_2d = np.eye(2, dtype=np.float64)
@@ -788,26 +747,14 @@ def _atlas_name() -> str:
 
 
 def _registered_blank_planes(volume: np.ndarray, target_ap: np.ndarray) -> list[int]:
-    """Report zero-valued planes without mistaking image content for I/O failure.
-
-    Zero is a valid intensity/background value.  An all-zero native result can
-    therefore be important visual-validation evidence, but it cannot prove
-    that a source was not rendered.  State/source/API checks establish backend
-    provenance; this diagnostic must not turn a pending test installation into
-    a failed build or synthesize replacement pixels.
-    """
+    """List all-zero planes. Zero is valid background, so this never fails the build or fills pixels."""
     return [int(value) for value in target_ap[~np.any(volume[target_ap] != 0, axis=(1, 2))]]
 
 
 def _classify_blank_registered_planes(grid_diagnostics: dict, target_ap: np.ndarray,
                                       blank_ap: list[int],
                                       source_plane_diagnostics: list[dict]) -> dict:
-    """Attribute every all-zero registered plane to the stage that produced it.
-
-    Stage 1 is the pinned source, stage 2 ABBA's BDV export, stage 3 the Python
-    change of sampling grid. Lumping them together as "brightness" hides which
-    component needs fixing. Accounting only; no plane is filled or altered.
-    """
+    """Attribute each all-zero plane to its stage: pinned source, ABBA export or resampling."""
     selection = {int(item["target_ap"]): item
                  for item in grid_diagnostics.get("native_plane_selection", [])}
     native_planes = grid_diagnostics.get("native_plane_intensity_diagnostics", [])
@@ -859,20 +806,15 @@ def _classify_blank_registered_planes(grid_diagnostics: dict, target_ap: np.ndar
     }
 
 
-# Ten voxels at 40 um, the point where a lateral offset is plainly visible under
-# the Paxinos contours. A guard, never a correction: nothing here moves a voxel.
+# Ten voxels, where a lateral offset becomes plainly visible. A warning, never a correction.
 ALIGNMENT_WARNING_UM = 400.0
 
 
 def _alignment_diagnostics(labels: np.ndarray, volume: np.ndarray,
                            target_ap: np.ndarray, sample: int = 25) -> dict:
-    """Measure residual SI/LR alignment by mask cross-correlation.
+    """Measure the residual SI/LR offset by cross-correlating tissue and annotation masks.
 
-    Prefer this over _spatial_diagnostics, which compares centroids of unequal
-    supports: registered histology carries tissue the annotation does not label,
-    which inflated its SI figure to ~200 um where the true offset is zero.
-
-    Diagnostic only; no voxel is moved on the strength of this median.
+    Centroids are not used: tissue outside the labelled area pulls them ~200 um off.
     """
     if not target_ap.size:
         return {"measured_plane_count": 0, "median_shift_si_lr_um": None}
@@ -884,16 +826,12 @@ def _alignment_diagnostics(labels: np.ndarray, volume: np.ndarray,
         signal = plane > 0
         if not mask.any() or not signal.any():
             continue
-        # Drop the dimmest fifth of the tissue so background haze does not
-        # dominate the correlation. `>=` matters: on a plane of near-uniform
-        # intensity the percentile lands on the maximum and `>` would discard
-        # the whole section.
+        # Ignore the dimmest fifth of the tissue. `>=`, not `>`: on a near-uniform
+        # plane the percentile equals the maximum and `>` would drop the section.
         signal &= plane >= np.percentile(plane[signal], 15)
         if not signal.any():
             continue
-        # Order the operands so a positive result means the Nissl sits towards
-        # higher SI/LR indices than the annotation, matching the sign of the
-        # centroid diagnostic; the reverse ordering reports the negation.
+        # With this operand order a positive shift means higher SI/LR indices than the annotation.
         spectrum = np.fft.rfft2(signal.astype(np.float32))
         correlation = np.fft.irfft2(spectrum * np.conj(np.fft.rfft2(mask.astype(np.float32))),
                                     s=mask.shape)
@@ -951,7 +889,7 @@ def _spatial_diagnostics(labels: np.ndarray, volume: np.ndarray, target_ap: np.n
 
 
 class _AbbaAtlasView:
-    """Expose the already AP/SI/LR arrays in ABBA's required ASR convention."""
+    """Present the AP/SI/LR arrays in the ASR convention ABBA expects."""
     def __init__(self, atlas):
         self._atlas = atlas
         self.orientation = "asr"
@@ -989,8 +927,7 @@ def render_native(package_path: str) -> dict:
     manifest = pipeline.load_package_manifest(package)
     state_path = package / manifest["abba_state_file"]
     runtime.inspect_state(state_path)
-    # The native path no longer touches the Waxholm BrainGlobe package: the
-    # pinned planes in resources/ are the registration's real input.
+    # The pinned planes are the registration's input; the Waxholm package is not read.
     source_report = _moving_source_provenance(manifest, _load_moving_plane_manifest())
     annotation_path = pipeline.find_annotation_tiff()
     labels = pipeline.orient_annotation(tifffile.imread(annotation_path), annotation_path)
@@ -1005,11 +942,8 @@ def render_native(package_path: str) -> dict:
         binding = build_rebound_state(state_path, planes, rebound_path)
         ij, _ = runtime.initialize_native_api(paths)
         abba, fixed_source_report = _open_fixed_abba(ij, _atlas_name())
-        # This authoritative `.abba` is ABBA's three-member project state
-        # (sources.json, state.json, BDV XML), not a "standard ZIP export".
-        # ImportStdZipStateCommand expects a different interchange format with
-        # meta.json.  Use the vendored state_load API so ABBA restores its own
-        # project/source serialization natively.
+        # The .abba file is ABBA's own project state (sources.json, state.json, BDV XML),
+        # not a standard ZIP export, so it goes through state_load.
         _restore_state_and_wait(abba, _java_file(rebound_path))
         transform_roundtrip, slice_state_audit, diagnostic_warnings = _collect_state_diagnostics(
             abba,
@@ -1017,18 +951,10 @@ def render_native(package_path: str) -> dict:
             paths.reports / "native_state_roundtrip.abba",
             paths.reports / "transform_roundtrip_diff.json",
         )
-        # ABBAStateLoadCommand can return after enqueueing slice actions.  A
-        # slice-count check only proves that CreateSliceAction ran; it does not
-        # prove that the later MoveSliceAction/RegisterSliceAction tasks (and
-        # their BigWarp transforms) finished.  Exporting here previously raced
-        # those tasks, producing a mixture of unregistered, distorted and blank
-        # sections.  Use the synchronization API shipped by ABBA 0.11 before
-        # observing or exporting the restored state.
-        # The serialized sources are 1-um-thick 2-D planes separated by 40 um.
-        # A volumetric BDV export otherwise contains empty Z planes depending
-        # on grid phase.  This native ABBA command changes only display/export
-        # thickness so neighbouring registered sections meet; it does not
-        # alter any saved registration transform or landmark.
+        # state_load returns while slice actions are still queued; exporting before the
+        # registrations finish yields unregistered or blank sections. The saved sources
+        # are 1 um planes 40 um apart, and matching their thickness to the neighbours
+        # closes the Z gaps without touching any transform.
         _prepare_slices_for_export_and_wait(abba)
         module = abba.export_resampled_slices_to_bdv_source(
             block_size_x=64, block_size_y=64, block_size_z=1, channels="0",
@@ -1121,24 +1047,21 @@ def render_native(package_path: str) -> dict:
             "stack_order": "anterior-to-posterior", "target_sequence_offset": 1,
             "anterior_edge_policy": "duplicate_first_registered_plane",
             "output_sha256": pipeline.sha256_file(pipeline.ACTIVE_PATH),
-            # A file hash covers the TIFF container too, so it cannot answer
-            # whether two runs produced the same voxels. Record both.
+            # The file hash also covers the TIFF container; the content hash compares voxels.
             "output_content_sha256": content_sha256,
             "output_content_sha256_definition":
                 "SHA-256 over the raw uint16 AP/SI/LR voxels, container excluded",
             "legacy_registered_stack_used": False,
             "stale_work_dirs_swept": swept,
         }
-        # Persisted before installing so the evidence survives a crash there.
-        # write_report() merges, so without a status a failed install leaves a
-        # block reading as a complete success. Record the stage reached.
+        # Written before installing, so the evidence survives a crash; install_status
+        # keeps a failed install from reading as a success.
         report["install_status"] = "pending"
         pipeline.write_report({"abba_reconstruction": report})
         pipeline.install_channel(report)
         report["install_status"] = "installed"
         report["candidate_archive"] = str(pipeline.repack_candidate())
-        # Retire the previous run's failure record; leaving it beside a
-        # successful reconstruction is the same trap as a stale success block.
+        # Drop the previous run's failure record.
         pipeline.write_report({"abba_reconstruction": report}, drop=("native_failure",))
         return report
     except Exception as exc:
