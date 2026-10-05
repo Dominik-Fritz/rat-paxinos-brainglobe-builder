@@ -1,17 +1,10 @@
 #!/usr/bin/env python
-"""
-V32.17 LabelAtlas Display Baseline
+"""Set up the label-only ABBA display baseline.
 
-Purpose
--------
-Return the rat Paxinos BrainGlobe/ABBA workflow to a label-only baseline:
-- keep paxinos_watson_rat_40um as the only active Paxinos atlas in the BrainGlobe cache
-- preserve annotation.nii.gz / annotation.tiff as full label volumes for ABBA label lookup
-- replace reference.nii.gz / reference.tiff with a 2D coronal in-plane border proxy
-- keep/force hemispheres empty so it cannot create filled helper display panels
-- document the required ABBA display state: reference Ch.0 ON, borders Ch.1 OFF
-
-This script intentionally does NOT create MRI/Waxholm/SIGMA/NeuroRat reference channels.
+Keeps paxinos_watson_rat_40um as the only Paxinos atlas in the BrainGlobe cache,
+leaves the annotation volumes intact, replaces the reference with a 2D coronal
+outline and keeps the hemispheres empty, which would otherwise show up as filled
+panels in ABBA.
 """
 
 from __future__ import annotations
@@ -87,7 +80,7 @@ def find_project_root(cli_project_root: Optional[str]) -> Path:
     default = Path(r"G:\rat-paxinos-brainglobe-builder")
     if default.exists():
         return default
-    # Fallback: infer from script location when package is inside project root.
+    # Fall back to the script's own location.
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "data").exists() and (parent / "src").exists():
@@ -129,28 +122,21 @@ def load_annotation_nifti(atlas_dir: Path):
 
 
 def compute_coronal_inplane_edges(annotation: np.ndarray) -> np.ndarray:
-    """Compute thin 2D in-plane label borders for each AP/coronal slice.
+    """Compute thin in-plane label borders for each coronal slice (axis 0 is AP).
 
-    Axis convention after the validated V32.2 reorientation:
-    shape = [AP, SI, LR]. Therefore each axis-0 slice is coronal/AP.
-
-    This deliberately avoids 3D borders along the stack axis, because those create
-    filled-looking surfaces in ABBA's multislice display. Humanity survives another
-    off-by-one-dimensional mistake.
+    Borders along AP are left out; ABBA's multi-slice view shows them as filled surfaces.
     """
     if annotation.ndim != 3:
         raise ValueError(f"Expected a 3D annotation volume, got shape={annotation.shape}")
 
     edges = np.zeros(annotation.shape, dtype=np.uint8)
 
-    # In-plane axis-1 differences, within each coronal slice.
     a = annotation[:, :-1, :]
     b = annotation[:, 1:, :]
     diff = (a != b) & ((a != 0) | (b != 0))
     edges[:, :-1, :] |= diff
     edges[:, 1:, :] |= diff
 
-    # In-plane axis-2 differences, within each coronal slice.
     a = annotation[:, :, :-1]
     b = annotation[:, :, 1:]
     diff = (a != b) & ((a != 0) | (b != 0))
@@ -188,12 +174,10 @@ def write_reference_proxy(atlas_dir: Path, backup_dir: Path, actions: List[Dict[
         tifffile.imwrite(str(atlas_dir / "reference.tiff"), ref, dtype=np.uint16)
         actions.append({"action": "write_reference_proxy", "atlas_dir": str(atlas_dir)})
 
-        # Keep hemispheres empty as a display/helper source. Do not affect annotation.
         hemi = np.zeros(ann.shape, dtype=np.uint8)
         tifffile.imwrite(str(atlas_dir / "hemispheres.tiff"), hemi, dtype=np.uint8)
         actions.append({"action": "write_empty_hemispheres", "path": str(atlas_dir / "hemispheres.tiff")})
 
-        # Metadata: document the baseline and how ABBA must be configured.
         meta_path = atlas_dir / "metadata.json"
         meta: Dict[str, Any] = {}
         if meta_path.exists():
@@ -280,7 +264,7 @@ def clean_last_versions(bg_root: Path, backup_dir: Path, actions: List[Dict[str,
         removed: List[str] = []
         for line in lines:
             low = line.lower()
-            # Keep the stable atlas line. Remove experimental Paxinos variants only.
+            # Remove experimental Paxinos variants; keep the stable atlas.
             if ATLAS_NAME.lower() in low and ATLAS_NAME.lower() + "_" in low:
                 removed.append(line)
             else:

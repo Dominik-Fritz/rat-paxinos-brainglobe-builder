@@ -1,28 +1,9 @@
 #!/usr/bin/env python
-"""
-V43C FINAL - based on the 0.2.4 final orientation/display logic.
+"""Fix the atlas axis order and write the three ABBA display channels.
 
-This replaces src\v43c_restore_v43_distance_channel.py.
-
-Critical point:
-The installed native BrainGlobe atlas can arrive as shape (409, 608, 286).
-That is the old/raw display orientation. The 0.2.4 release fixed this by applying:
-
-    old/raw axes [LR, AP, SI] -> final axes [AP, SI, LR]
-    perm = (1, 2, 0)
-    final shape = (608, 286, 409)
-
-This script restores exactly that behavior, then writes the final three useful ABBA
-display channels:
-
-    Ch0 reference                         = 0.2.4-style 2D coronal label-outline proxy
-    Ch1 soft_region_fill_reference         = soft label-derived helper
-    Ch2 distance_to_2d_outline_reference   = V43-style 2D per-slice inside-mask distance helper
-
-It also sets:
-    additional_references = ["soft_region_fill_reference", "distance_to_2d_outline_reference"]
-
-Native ABBA borders are handled separately by V44.
+An installed atlas can arrive as (409, 608, 286), i.e. [LR, AP, SI]; it is permuted
+to [AP, SI, LR] with perm (1, 2, 0). Ch0 is the 2D coronal label outline, Ch1 a
+soft region fill and Ch2 the in-mask distance to the outline, per slice.
 """
 
 from __future__ import annotations
@@ -39,8 +20,8 @@ ATLAS_NAME = "paxinos_watson_rat_40um"
 CACHE_DIR = f"{ATLAS_NAME}_v1.0"
 REPORT_DIR_NAME = "v43c_restore_v43_distance_channel"
 
-FINAL_SHAPE = (608, 286, 409)       # [AP, SI, LR], validated old 0.2.4 ABBA layout
-RAW_OR_OLD_SHAPE = (409, 608, 286)  # [LR, AP, SI], native/failed display orientation
+FINAL_SHAPE = (608, 286, 409)       # [AP, SI, LR]
+RAW_OR_OLD_SHAPE = (409, 608, 286)  # [LR, AP, SI], as installed
 VALIDATED_PERM = (1, 2, 0)
 VALIDATED_ORIENTATION = "PIL"
 
@@ -223,8 +204,7 @@ def compute_2d_coronal_edges_uint16(annotation):
         raise ValueError(f"Expected 3D annotation, got {annotation.shape}")
     edges = np.zeros(annotation.shape, dtype=np.uint8)
 
-    # Final shape axis model: [AP, SI, LR]. Axis 0 is coronal stack.
-    # Only in-plane borders: axes 1 and 2. No previous/next slice comparison.
+    # Axis 0 is the coronal stack; borders come from axes 1 and 2 only.
     a = annotation[:, :-1, :]
     b = annotation[:, 1:, :]
     diff = (a != b) & ((a != 0) | (b != 0))
