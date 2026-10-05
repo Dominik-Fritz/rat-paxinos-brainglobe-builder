@@ -1,36 +1,10 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-V44 patch: hide ABBA native 'borders' display channel for BrainGlobe atlases.
+"""Stop ABBA from registering its own 'borders' display source.
 
-This patch modifies abba_python/abba_map.py, not the atlas data.
-
-Reason:
-abba_python's AbbaMap.initialize() explicitly adds a native display channel:
-
-    image_keys.add(JString('borders'))
-    structural_images['borders'] = SourceVoxelProcessor.getBorders(self.annotation_sac)
-    self.maxValues['borders'] = 256
-
-That is exactly why ABBA shows 'borders (Ch. 3)' even though the atlas already has
-our useful Ch0/Ch1/Ch2 display channels.
-
-V44 disables only that display source registration. It leaves:
-
-    self.annotation_sac
-    getLabelImage()
-
-unchanged. Therefore annotation labels remain available for mapping/export.
-
-This is an ABBA Python loader patch. It does not touch:
-    annotation.tiff
-    annotation.nii.gz
-    structures.json
-    reference.tiff
-    soft_region_fill_reference
-    distance_to_2d_outline_reference
-
-Yes, we finally patch the right thing. Software archaeology occasionally finds the fossil.
+abba_python's AbbaMap.initialize() adds a 'borders' channel derived from the
+annotation. Only that registration is disabled in abba_map.py; annotation_sac and
+getLabelImage() stay, so the labels remain available for mapping and export. No
+atlas file is modified.
 """
 
 from __future__ import annotations
@@ -97,7 +71,6 @@ def candidate_python_exes(project_root: Path) -> List[Path]:
             except Exception:
                 pass
 
-    # De-duplicate while preserving order.
     out: List[Path] = []
     seen = set()
     for p in candidates:
@@ -186,7 +159,6 @@ def scan_common_locations(project_root: Path, deep_search: bool) -> List[Path]:
                 except Exception:
                     pass
 
-    # De-duplicate.
     out: List[Path] = []
     seen = set()
     for p in candidates:
@@ -231,7 +203,6 @@ def discover_abba_map_files(project_root: Path, explicit: Optional[str], deep_se
 
 
 def active_borders_lines(text: str) -> Dict[str, bool]:
-    # Ignore commented-out lines.
     image_key = False
     structural = False
     maxval = False
@@ -311,7 +282,7 @@ def patch_text(text: str) -> Dict[str, Any]:
             new = new2
             report["changed"] = True
         else:
-            # Some ABBA versions are minified to one line. Handle simple one-line fallback below.
+            # Some ABBA versions put this on one line; see the fallback below.
             report.setdefault("missing_patterns", []).append(label)
 
     # One-line fallback for the raw 0.11 abba_map.py style.

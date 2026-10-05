@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""
-V33.3b Label Acronym Resource Sanitizer
+"""Sanitize the curated acronym resource for the current atlas; annotation volumes are never touched.
 
-Makes the curated Paxinos/Watson acronym resource safe for integration with the
-currently built BrainGlobe atlas. This script never modifies annotation volumes.
-
-Default mode is dry-run. Use --apply to replace the project resource CSV/TXT with
-sanitized versions. A backup is created before replacement.
+Dry run by default; --apply replaces the resource CSV and TXT after a backup.
 """
 from __future__ import annotations
 
@@ -146,7 +141,7 @@ def sanitize_resource(rows: List[Dict[str, str]], structures: List[Dict[str, Any
         prop_acr = norm(row.get("proposed_acronym"))
         basis = norm(row.get("acronym_basis"))
 
-        # Placeholder raw entries should not overwrite the more useful generated current metadata.
+        # Placeholder entries must not overwrite the generated metadata.
         if basis == "paxinos_placeholder" or PLACEHOLDER_NAME_RE.match(raw_name) or PLACEHOLDER_NAME_RE.match(prop_name):
             row["proposed_acronym"] = current_acr or prop_acr
             row["proposed_name"] = current_name or prop_name or raw_name
@@ -162,7 +157,7 @@ def sanitize_resource(rows: List[Dict[str, str]], structures: List[Dict[str, Any
     missing_in_source = sorted(structure_ids - set(source_by_id))
     for sid in missing_in_source:
         if sid == 997:
-            # root is handled by the builder/ontology and should not get a Paxinos raw acronym row.
+            # root comes from the ontology, not from a Paxinos acronym row.
             continue
         st = structures_by_id[sid]
         row = {
@@ -253,7 +248,7 @@ def main() -> int:
         return 2
 
     rows = read_csv_dicts(resource)
-    structures_path = selected / "structures.json"  # type: ignore[operator]
+    structures_path = selected / "structures.json"
     structures = load_structures(structures_path)
     sanitized, excluded, added, counts = sanitize_resource(rows, structures)
     fieldnames = list(dict.fromkeys(BASE_COLS + [c for r in sanitized for c in r.keys()]))

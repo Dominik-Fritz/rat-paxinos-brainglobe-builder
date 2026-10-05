@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-V33.3 Label Acronym Integration Validator
-
-Validates the curated Paxinos/Watson acronym resource before it is used by the
-builder. This script is intentionally conservative: it never modifies atlas
-files. It only writes reports.
-"""
+"""Validate the curated acronym resource before the builder uses it; writes reports only."""
 from __future__ import annotations
 
 import argparse
@@ -140,7 +134,7 @@ def validate_rows(rows: List[Dict[str, str]], structures_by_id: Dict[int, Dict[s
     resource_ids_missing_in_structures = sorted(resource_ids - structure_ids)
     structure_ids_missing_in_resource = sorted(i for i in structure_ids - resource_ids if i != 997)  # root may be absent from raw Paxinos labels
 
-    # Duplicate acronyms in resource and after hypothetical approved apply.
+    # Duplicate acronyms in the resource and after applying the approved rows.
     acr_counter = Counter(norm_acr(r.get("proposed_acronym")) for r in rows if norm_acr(r.get("proposed_acronym")))
     duplicate_resource_acronyms = sorted([a for a, c in acr_counter.items() if c > 1])
 
@@ -158,7 +152,7 @@ def validate_rows(rows: List[Dict[str, str]], structures_by_id: Dict[int, Dict[s
     final_counter = Counter(a for a in final_acronyms.values() if a)
     duplicate_final_acronyms = sorted([a for a, c in final_counter.items() if c > 1])
 
-    # Name mismatch check only as warning because current structures may already be generated/curated.
+    # Name mismatches only warn: the current structures may already be curated.
     name_mismatches = []
     for sid, r in rows_by_id.items():
         st = structures_by_id.get(sid)
@@ -263,7 +257,7 @@ def main() -> int:
         report["passed"] = False
         report["errors"].append(f"Resource CSV missing columns: {missing_cols}")
     else:
-        structures_path = selected_atlas / "structures.json"  # type: ignore[operator]
+        structures_path = selected_atlas / "structures.json"
         structures = load_structures(structures_path)
         structures_by_id = {int(s["id"]): s for s in structures if "id" in s}
         validation = validate_rows(rows, structures_by_id)
@@ -277,7 +271,6 @@ def main() -> int:
             validation["name_mismatches"],
             ["label_id", "current_acronym", "current_name", "paxinos_name", "proposed_acronym", "proposed_name", "review_status", "confidence", "acronym_basis"],
         )
-        # Planned approved changes preview
         planned = []
         for r in rows:
             if norm_text(r.get("review_status")) != "approved":

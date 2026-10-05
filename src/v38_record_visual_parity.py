@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
-"""Record the human visual-parity decision for the installed Ch03 channel.
+"""Record the visual-parity decision for the installed Ch03 channel.
 
-Visual validation cannot be automated, so no build step sets it. This entry
-point exists to write that decision down deliberately, bind it to the exact
-reconstruction it was made for, and push it into the atlas metadata without
-re-rendering.
+The decision goes to resources/optional_ch03/visual_parity_approval.json together
+with the content hash it applies to, so a build with different voxels falls back
+to pending. Example:
 
-The decision is stored in resources/optional_ch03/visual_parity_approval.json
-naming the reconstruction's content hash. A later build whose voxels differ
-produces a different hash, so the approval stops applying and the status falls
-back to pending rather than being inherited silently.
+    .venv\\Scripts\\python.exe src\\v38_record_visual_parity.py passed --reviewer "NAME" --apply
 
-Typical use, after inspecting the channel under the Paxinos contours in ABBA:
-
-    .venv\\Scripts\\python.exe src\\v38_record_visual_parity.py passed \\
-        --reviewer "Dominik Fritz" --notes "AP 10-597 checked, contours symmetric"
-
-`--status failed` is equally recordable; the install path then refuses to keep
-the channel, which is the intended outcome of a failed review.
+Use `failed` instead of `passed` to record a failed review.
 """
 from __future__ import annotations
 
@@ -62,8 +52,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="also write the decision into the installed atlas metadata")
     args = parser.parse_args(argv)
 
-    # Hash the file that is actually on disk. Trusting the report's own figure
-    # would let a stale report approve a channel it does not describe.
+    # Hash the file on disk; the report's own figure could be stale.
     observed = _active_content_sha256()
     reported = _reported_content_sha256()
     if reported and reported != observed:
@@ -112,8 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     if not reconstruction:
         raise SystemExit("ERROR: the Ch03 report has no abba_reconstruction block.")
     reconstruction.update(resolved)
-    # Reuse the transactional install rather than re-rendering: the voxels are
-    # unchanged and verified identical above, only the recorded decision moves.
+    # Reinstall without re-rendering: the voxels were verified identical above.
     installed = pipeline.install_channel(reconstruction)
     pipeline.write_report({"abba_reconstruction": reconstruction})
     print(f"Applied to {len(installed)} atlas target(s).")

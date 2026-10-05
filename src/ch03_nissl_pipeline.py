@@ -1,8 +1,5 @@
-"""Install the manually registered WHS/Nissl reference as atlas channel 3.
+"""Install the registered Waxholm Nissl reference as atlas channel 3.
 
-This release module intentionally contains only the deterministic runtime path:
-validate a curated registration package, map its registered ImageJ stack to the
-Paxinos AP sequence, install TIFF/NIfTI references, and repack the candidate.
 The Paxinos annotation and ontology are never modified.
 """
 from __future__ import annotations
@@ -40,9 +37,8 @@ ABBA_PIXEL_MM = 0.0195
 PACKAGE_MANIFEST_NAME = "registration_manifest.json"
 DEFAULT_STACK_NAME = "registered_slices_ImageJ_stack.tif"
 DEFAULT_STACK_ORDER = "anterior-to-posterior"
-# Visual ABBA validation showed the exported Nissl sequence belongs one target
-# position to the right of the initial direct mapping. This is an AP sequence
-# offset, not a spatial image transformation.
+# Inspection in ABBA placed the Nissl sequence one target position after the
+# direct mapping. This is an AP sequence offset, not a spatial transform.
 DEFAULT_TARGET_SEQUENCE_OFFSET = 1
 
 
@@ -55,21 +51,15 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 
 def write_report(update: dict, drop: Iterable[str] = ()) -> None:
-    """Merge into the persistent Ch03 report, optionally retiring stale keys.
-
-    Merging keeps evidence across stages, but it also carries a previous run's
-    keys forward. `drop` lets a stage retire the ones it has just superseded --
-    a successful render must not leave the last run's native_failure in place.
-    """
+    """Merge into the persistent Ch03 report; `drop` removes keys this stage supersedes."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report = json.loads(REPORT_JSON.read_text(encoding="utf-8")) if REPORT_JSON.exists() else {}
     for key in drop:
         report.pop(key, None)
     report.update(update)
     report["updated_utc"] = datetime.now(timezone.utc).isoformat()
-    # This file is read back and merged on every call and is now ~0.9 MB. A
-    # direct write that is interrupted leaves truncated JSON, which makes every
-    # later run fail while reading it. Stage beside it, then rename in place.
+    # Write beside the file and rename, so an interrupted write cannot leave
+    # truncated JSON behind.
     staged = REPORT_JSON.with_suffix(".json.partial")
     staged.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     staged.replace(REPORT_JSON)
@@ -303,9 +293,8 @@ def import_registered_stack(
     volume[target_ap] = stack_u16
     duplicated_target_ap: int | None = None
     if start == 1 and anterior_edge_policy == "duplicate_first_registered_plane":
-        # There is no separately registered section for the leading target
-        # position. Reusing the nearest registered section avoids an empty Ch03
-        # edge while preserving the validated +1 alignment for all real pairs.
+        # No registered section exists for the leading target position; reuse the
+        # nearest one rather than leave the Ch03 edge empty.
         duplicated_target_ap = int(fixed_ap[0])
         volume[duplicated_target_ap] = stack_u16[0]
     OPTIONAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -331,14 +320,7 @@ def import_registered_stack(
 
 def write_nifti(active: np.ndarray, reference_atlas: Path, destination_dir: Path,
                 name: str) -> Path:
-    """Save the Ch03 volume using the atlas annotation's authoritative header.
-
-    `reference_atlas` supplies annotation.nii.gz (affine, header, axis order);
-    `destination_dir` receives the file. As one parameter this was unsatisfiable
-    -- the only call site guarded on the staging directory holding
-    annotation.nii.gz, which a fresh mkdtemp never does -- so the orientation
-    check below was dead and an unchecked fallback ran instead.
-    """
+    """Save the Ch03 volume with the header and axis order of the atlas annotation."""
     annotation = nib.load(str(reference_atlas / "annotation.nii.gz"))
     target_shape = tuple(int(v) for v in annotation.shape[:3])
     if target_shape == tuple(active.shape):
@@ -437,9 +419,8 @@ def install_channel(import_report: dict) -> list[dict]:
     if not eligible:
         close_memmap(active)
         raise FileNotFoundError("No generated or installed Paxinos atlas accepted the Ch03 channel.")
-    # Keep a transaction-level snapshot as well as each target's local staging
-    # backup. If activation of a later atlas fails, earlier atlas targets must
-    # not retain a Ch03 result from this failed run.
+    # Besides each target's own backup, keep a snapshot of the whole transaction,
+    # so a failure on a later atlas also rolls back the earlier ones.
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     transaction = Path(tempfile.mkdtemp(prefix="ch03-install-transaction-", dir=REPORT_DIR))
     name = "waxholm_anatomy_reference"
@@ -456,10 +437,8 @@ def install_channel(import_report: dict) -> list[dict]:
                 snapshots[destination] = (existed, backup)
         installed = [_transactional_atlas_install(atlas, active, import_report) for atlas in eligible]
     except Exception:
-        # The snapshot lives under reports/ while an installed atlas can sit on
-        # another drive, where os.replace() raises WinError 17 -- inside this
-        # handler that replaced the real installation error. Restore by copy and
-        # never let a rollback problem displace the original exception.
+        # The snapshot may be on another drive than the atlas, so restore by copying,
+        # and never let a rollback error replace the original exception.
         rollback_failures = []
         for destination, (existed, backup) in snapshots.items():
             try:

@@ -16,12 +16,8 @@ from utils_paths import REPORTS_DIR, official_candidate_folder, provisional_fold
 
 console = Console()
 
-# Validated interactively in ABBA after test atlas builds:
-# Original V32 arrays behaved as [LR, AP, SI] with metadata orientation LPI.
-# ABBA buttons mapped correctly and coronal was upright only after this display-space permutation:
-#     new axes = [AP, SI, LR]
-#     perm = (1, 2, 0)
-#     orientation = PIL
+# Checked in ABBA: the original arrays were [LR, AP, SI] with orientation LPI, and
+# the views are only correct after permuting to [AP, SI, LR] (perm (1, 2, 0), PIL).
 VALIDATED_PERM = (1, 2, 0)
 VALIDATED_ORIENTATION = "PIL"
 VALIDATION_NOTE = (
@@ -56,11 +52,9 @@ def transform_array(arr: np.ndarray, perm: tuple[int, int, int] = VALIDATED_PERM
 
 
 def transformed_affine(old_affine: np.ndarray, perm: tuple[int, int, int] = VALIDATED_PERM) -> np.ndarray:
-    """Permute affine columns to match a pure axis permutation without flips.
+    """Permute the affine columns to match a pure axis permutation, without flips.
 
-    This keeps the NIfTI internally honest enough for inspection tools. ABBA/BrainGlobe mainly use
-    the TIFF arrays and metadata, but leaving a stale LPI affine after changing the array order would
-    be the sort of polite lie that later becomes a bug report with screenshots.
+    ABBA mostly reads the TIFFs, but a stale LPI affine would mislead other tools.
     """
     new_aff = np.array(old_affine, dtype=float, copy=True)
     new_aff[:3, :3] = old_affine[:3, list(perm)]
@@ -145,8 +139,7 @@ def patch_metadata(folder: Path, transformed: dict[str, Any], target: str) -> di
     metadata["files"]["annotation_tiff"] = "annotation.tiff"
     metadata["files"]["reference_nifti"] = "reference.nii.gz"
     metadata["files"]["annotation_nifti"] = "annotation.nii.gz"
-    # Do not advertise hemispheres as a normal display/reference channel. ABBA/BrainGlobe can still
-    # use hemispheres_file, but the file should not masquerade as a third visible reference channel.
+    # hemispheres_file stays available, but it is not listed as a reference channel.
     metadata["files"].pop("hemispheres", None)
     if (folder / "hemispheres.tiff").exists():
         metadata["hemispheres_file"] = "hemispheres.tiff"

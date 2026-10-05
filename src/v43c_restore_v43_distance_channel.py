@@ -1,29 +1,9 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-V43C FINAL - based on the 0.2.4 final orientation/display logic.
+"""Fix the atlas axis order and write the three ABBA display channels.
 
-This replaces src\v43c_restore_v43_distance_channel.py.
-
-Critical point:
-The installed native BrainGlobe atlas can arrive as shape (409, 608, 286).
-That is the old/raw display orientation. The 0.2.4 release fixed this by applying:
-
-    old/raw axes [LR, AP, SI] -> final axes [AP, SI, LR]
-    perm = (1, 2, 0)
-    final shape = (608, 286, 409)
-
-This script restores exactly that behavior, then writes the final three useful ABBA
-display channels:
-
-    Ch0 reference                         = 0.2.4-style 2D coronal label-outline proxy
-    Ch1 soft_region_fill_reference         = soft label-derived helper
-    Ch2 distance_to_2d_outline_reference   = V43-style 2D per-slice inside-mask distance helper
-
-It also sets:
-    additional_references = ["soft_region_fill_reference", "distance_to_2d_outline_reference"]
-
-Native ABBA borders are handled separately by V44.
+An installed atlas can arrive as (409, 608, 286), i.e. [LR, AP, SI]; it is permuted
+to [AP, SI, LR] with perm (1, 2, 0). Ch0 is the 2D coronal label outline, Ch1 a
+soft region fill and Ch2 the in-mask distance to the outline, per slice.
 """
 
 from __future__ import annotations
@@ -40,8 +20,8 @@ ATLAS_NAME = "paxinos_watson_rat_40um"
 CACHE_DIR = f"{ATLAS_NAME}_v1.0"
 REPORT_DIR_NAME = "v43c_restore_v43_distance_channel"
 
-FINAL_SHAPE = (608, 286, 409)       # [AP, SI, LR], validated old 0.2.4 ABBA layout
-RAW_OR_OLD_SHAPE = (409, 608, 286)  # [LR, AP, SI], native/failed display orientation
+FINAL_SHAPE = (608, 286, 409)       # [AP, SI, LR]
+RAW_OR_OLD_SHAPE = (409, 608, 286)  # [LR, AP, SI], as installed
 VALIDATED_PERM = (1, 2, 0)
 VALIDATED_ORIENTATION = "PIL"
 
@@ -93,9 +73,9 @@ def stamp() -> str:
 
 def import_image_libs():
     try:
-        import numpy as np  # type: ignore
-        import nibabel as nib  # type: ignore
-        import tifffile  # type: ignore
+        import numpy as np
+        import nibabel as nib
+        import tifffile
     except Exception as exc:
         raise RuntimeError("Missing numpy/nibabel/tifffile in the active environment.") from exc
     return np, nib, tifffile
@@ -224,8 +204,7 @@ def compute_2d_coronal_edges_uint16(annotation):
         raise ValueError(f"Expected 3D annotation, got {annotation.shape}")
     edges = np.zeros(annotation.shape, dtype=np.uint8)
 
-    # Final shape axis model: [AP, SI, LR]. Axis 0 is coronal stack.
-    # Only in-plane borders: axes 1 and 2. No previous/next slice comparison.
+    # Axis 0 is the coronal stack; borders come from axes 1 and 2 only.
     a = annotation[:, :-1, :]
     b = annotation[:, 1:, :]
     diff = (a != b) & ((a != 0) | (b != 0))
@@ -252,7 +231,7 @@ def make_soft_region_fill(labels, sigma: float):
 
     if sigma > 0:
         try:
-            from scipy.ndimage import gaussian_filter  # type: ignore
+            from scipy.ndimage import gaussian_filter
             soft = gaussian_filter(out.astype(np.float32), sigma=float(sigma))
             soft[~mask] = 0
             out = np.clip(soft, 0, 255).astype(np.uint8)
@@ -268,7 +247,7 @@ def make_distance_to_outline(labels, outline_uint16):
     out = np.zeros(labels.shape, dtype=np.uint16)
 
     try:
-        from scipy.ndimage import distance_transform_edt  # type: ignore
+        from scipy.ndimage import distance_transform_edt
         for i in range(labels.shape[0]):
             m = mask[i]
             if not m.any():

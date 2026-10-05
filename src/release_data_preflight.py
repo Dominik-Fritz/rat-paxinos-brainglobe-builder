@@ -1,8 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-Release data preflight for the Rat Paxinos/Watson BrainGlobe Builder.
-"""
+"""Check the builder's source data before the build starts."""
 from __future__ import annotations
 
 import json

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 RISK_LABEL_IDS = {
-    # suffix/forced-disambiguation rows or explicit review/conflict rows from V33.4B dry-run
+    # Rows with forced suffixes, or flagged for review or conflict in the dry run.
     177, 194, 350, 352, 405, 461, 482, 483, 582, 591, 594, 636, 637, 648, 657, 836,
 }
 RISK_WORDS = re.compile(r"\b(review|conflict|overlap)\b", re.IGNORECASE)
@@ -62,7 +62,7 @@ def risk_reason(row: dict) -> List[str]:
         reasons.append("numeric_suffix_acronym_needs_manual_review")
     if RISK_WORDS.search(detail):
         reasons.append("basis_detail_contains_review_conflict_or_overlap")
-    # Extra hard block: never let root-like structural identity be changed through this filter
+    # Root identity can never change through this filter.
     name = get_col(row, "paxinos_name", "proposed_name", "name")
     if sid == 997 or name.strip().lower() == "root":
         reasons.append("root_or_root_like_row_needs_manual_review")
@@ -143,7 +143,6 @@ def main() -> int:
     if invalid_after:
         errors.append(f"Invalid review_status values after demotion: {invalid_after}")
 
-    # Write reports
     demoted_fields = list(fieldnames) + ["demotion_reason"] if fieldnames else []
     write_csv_dicts(report_dir / "v33_4c_demoted_high_confidence_rows.csv", demoted, demoted_fields if demoted_fields else ["demotion_reason"])
     write_csv_dicts(report_dir / "v33_4c_kept_approved_rows.csv", kept_approved, fieldnames)

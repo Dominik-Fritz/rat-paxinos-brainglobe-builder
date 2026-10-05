@@ -120,7 +120,7 @@ def cleanup_structures(structures_path: Path) -> dict[str, Any]:
             s["acronym"] = safe_acronym_from_name(str(s["name"]), sid)
             changes.append({"id": sid, "type": "acronym_fixed", "before": old_acronym, "after": s["acronym"]})
 
-        # BrainGlobe tree is still flat for now, but paths must be sane.
+        # The tree is flat, but every path must still be valid.
         target_path = [ROOT_ID, sid]
         if s.get("structure_id_path") != target_path:
             before = s.get("structure_id_path")

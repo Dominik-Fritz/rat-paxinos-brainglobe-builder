@@ -183,7 +183,7 @@ def fix(folder: Path) -> dict[str, Any]:
         )
         changed += 1
 
-    # Final duplicate-ID safety: keep first root, reject non-root duplicate ids.
+    # Keep the first root; reject any other duplicate ID.
     seen: set[int] = set()
     deduped: list[dict[str, Any]] = []
     duplicate_ids_removed = []

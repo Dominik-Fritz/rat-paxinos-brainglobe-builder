@@ -1,28 +1,8 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-V33.9b Sanitize Pending Duplicate Resource Acronyms
+"""Give pending duplicate acronym proposals unique placeholders so the strict resource validator passes.
 
-Purpose
--------
-The V33.3b validator is intentionally strict and fails when *any* proposed_acronym
-in the curation resource is duplicated, even when duplicate rows are not approved
-and therefore would not be applied to structures.json.
-
-V33.9 imported DeepSeek proposals safely: duplicate proposals were left pending,
-so duplicate_final_acronyms_if_approved_applied remained zero. However, the raw
-pending duplicate proposals still sit in proposed_acronym and make the strict
-resource validator fail.
-
-This script fixes only that validator-blocking bookkeeping issue:
-- approved rows are never changed;
-- annotation volumes are never changed;
-- structures.json is never changed;
-- non-approved rows that participate in proposed_acronym duplicate groups are
-  given a unique non-applied placeholder proposal, preferably their current atlas
-  acronym, so the resource table regains global acronym uniqueness;
-- review_status remains pending_review/do_not_apply, so these rows are still not
-  applied later.
+Approved rows, the annotation volumes and structures.json are never changed, and
+the affected rows stay unapproved.
 """
 from __future__ import annotations
 
@@ -203,7 +183,7 @@ def main() -> int:
     changed_rows = []
     critical_approved_duplicates = []
 
-    # If duplicate groups contain >1 approved rows, do not alter them automatically.
+    # Several approved rows in one duplicate group are left for manual review.
     for acro, vals in duplicates_before.items():
         approved = [(i, r) for i, r in vals if str(r.get("review_status", "")).strip() == "approved"]
         if len(approved) > 1:
@@ -244,7 +224,7 @@ def main() -> int:
                     "current_atlas_acronym": current_acro,
                 })
                 if status == "approved":
-                    # Keep approved row untouched. Its acronym is already in used.
+                    # Approved rows keep their acronym.
                     continue
                 old = acro
                 new = unique_fallback(current_acro, label_id, used)

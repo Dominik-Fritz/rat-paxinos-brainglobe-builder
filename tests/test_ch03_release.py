@@ -706,7 +706,7 @@ class NativeRuntimeInitializationTests(unittest.TestCase):
             self.assertEqual(written.parent, stage)
             self.assertFalse((atlas / "channel.nii.gz").exists())
 
-            # The unreachable branch used to transpose without checking.
+            # A shape that matches no axis order is refused, not transposed.
             with self.assertRaisesRegex(Exception, "Cannot orient Ch03"):
                 pipeline.write_nifti(np.ones((5, 5, 5), dtype=np.uint16),
                                      atlas, stage, "channel")

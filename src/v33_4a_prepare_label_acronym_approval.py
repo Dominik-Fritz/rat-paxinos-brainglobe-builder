@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""
-V33.4A Label Acronym Approval Preparer
+"""Prepare, and optionally apply, approvals for rows of the label acronym resource.
 
-Purpose:
-- Reads resources/label_curation/Paxinos_Watson_Labels_Acronyms_with_basis.csv
-- Creates an approval plan for safe label acronym metadata rows
-- Optionally changes review_status to approved in the resource CSV
-- Does NOT modify annotation volumes
-- Does NOT modify structures.json
-
-Scopes:
-- official_local: approve only Paxinos cortex exact-ID rows
-- high_confidence: approve official_local + high confidence manual_common_neuroanatomy rows
-- report_only: approve nothing, only write report tables
+Scopes: official_local approves only exact-ID cortex rows, high_confidence adds
+high-confidence common-neuroanatomy rows, report_only approves nothing. The
+annotation volumes and structures.json are never modified.
 """
 from __future__ import annotations
 
@@ -176,7 +167,7 @@ def main() -> int:
         elif action == "do_not_apply":
             new_status = "do_not_apply"
         else:
-            # Preserve pending_review or other valid states unless explicitly excluded.
+            # Keep pending_review and other valid states unless excluded.
             new_status = old_status
 
         plan_row = {
@@ -205,7 +196,7 @@ def main() -> int:
         row["review_status"] = new_status
         updated_rows.append(row)
 
-    # Check duplicate final acronyms among approved+current kept state after proposed approved rows.
+    # Check for duplicate acronyms after the proposed approvals.
     final_acronyms = []
     for original, updated in zip(rows, updated_rows):
         if updated.get("review_status") == "approved":
@@ -216,7 +207,6 @@ def main() -> int:
     if dup_final:
         report["errors"].append(f"Duplicate final acronyms would occur: {dup_final[:50]}")
 
-    # Write outputs.
     plan_fields = [
         "label_id", "current_structure_acronym", "current_structure_name", "proposed_acronym", "proposed_name",
         "acronym_basis", "confidence", "old_review_status", "new_review_status", "planned_action",
@@ -227,7 +217,7 @@ def main() -> int:
     write_csv_dicts(report_dir / "v33_4a_kept_for_review.csv", keep_rows, plan_fields)
     write_csv_dicts(report_dir / "v33_4a_problem_rows.csv", problem_rows, plan_fields)
 
-    # In apply mode, backup and write resource CSV + txt.
+    # Apply mode: back up, then write the resource CSV and TXT.
     backups = []
     if args.mode == "apply" and not report["errors"]:
         for path in [resource_csv, acronym_txt]:

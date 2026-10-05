@@ -42,9 +42,7 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def normalize_additional_references(value: Any) -> list[str]:
-    # BrainGlobe AdditionalRefDict iterates over entries and uses them as dict keys.
-    # Therefore entries must be hashable, i.e. strings. Dicts explode with:
-    # TypeError("unhashable type: 'dict'")
+    # BrainGlobe's AdditionalRefDict uses the entries as dict keys, so they must be strings.
     default = [
         PAXINOS_CITATION,
         BLUEBRAIN_CITATION,

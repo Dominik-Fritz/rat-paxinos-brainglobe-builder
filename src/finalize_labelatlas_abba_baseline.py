@@ -1,27 +1,9 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-V43C final three-channel ABBA display layout.
+"""Finalize the three-channel ABBA display layout.
 
-This is the finalization of the working V43 result:
-
-    Ch0 reference                         = 0.2.4-style 2D coronal label-outline proxy
-    Ch1 soft_region_fill_reference         = soft label-derived orientation reference
-    Ch2 distance_to_2d_outline_reference   = distance/orientation helper derived from the 2D outline
-    Ch3 native ABBA borders                = OFF / not part of the working layout
-
-Important:
-- annotation.tiff and annotation.nii.gz are NOT modified.
-- structures.json is NOT modified.
-- ABBAs native borders channel can still exist because ABBA derives it from the annotation.
-  We do not use it anymore.
-- This script removes obsolete experimental active extra channels:
-    distance_to_boundary_reference
-    label_boundary_display_reference
-    clean_coronal_outline_reference
-
-The point is to reproduce the old 0.2.4 display behavior where the useful
-label display lived in reference.tiff, then add exactly two useful helper channels.
+Ch0 is the 2D coronal label outline, Ch1 a soft region fill, Ch2 the distance to
+that outline. The annotation volumes and structures.json are left untouched, and
+channels from earlier display experiments are removed.
 """
 
 from __future__ import annotations
@@ -97,9 +79,9 @@ def stamp() -> str:
 
 def import_image_libs():
     try:
-        import numpy as np  # type: ignore
-        import nibabel as nib  # type: ignore
-        import tifffile  # type: ignore
+        import numpy as np
+        import nibabel as nib
+        import tifffile
     except Exception as exc:
         raise RuntimeError(
             "Missing numpy/nibabel/tifffile. Run run_builder.bat once so the local .venv is populated."
@@ -190,12 +172,9 @@ def load_annotation(atlas_dir: Path):
 
 
 def compute_2d_outline_uint16(labels, slice_axis: int, include_outer_boundary: bool = True):
-    """
-    Build a 0.2.4-style 2D coronal in-plane label-outline proxy.
+    """Build the 2D coronal label outline from in-plane label changes only.
 
-    Axis slice_axis is the stack axis. Within each slice, only in-plane neighbor
-    label transitions are used. Previous/next slice comparisons are deliberately
-    ignored, preventing hard regional start/end faces from becoming filled slabs.
+    Changes along the stack axis are ignored; ABBA would show them as filled slabs.
     """
     np, _nib, _tifffile = import_image_libs()
 
@@ -251,7 +230,7 @@ def make_soft_region_fill(labels, sigma: float):
 
     if sigma > 0:
         try:
-            from scipy.ndimage import gaussian_filter  # type: ignore
+            from scipy.ndimage import gaussian_filter
             soft = gaussian_filter(out.astype(np.float32), sigma=float(sigma))
             soft[~mask] = 0
             out = np.clip(soft, 0, 255).astype(np.uint8)
@@ -262,21 +241,9 @@ def make_soft_region_fill(labels, sigma: float):
 
 
 def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0):
-    """
-    V43C restores the V43-style Ch2.
+    """Build Ch2: per coronal slice, the distance to the 2D outline inside the atlas mask.
 
-    V43B accidentally changed Ch2 into an inverted full-volume halo, which ABBA displays
-    as pale filled sections. The working V43 channel was a 2D per-coronal-slice distance
-    map inside the atlas mask:
-
-    - computed independently for each coronal slice
-    - distance to the 0.2.4-style in-plane outline
-    - outside the annotation mask stays zero
-    - normalized per slice
-    - uint16 output, like the old working V43 channel
-
-    Result:
-        Ch2 is an optional orientation/helper channel again, not a washed-out slab festival.
+    Normalized per slice, zero outside the mask, written as uint16.
     """
     np, _nib, _tifffile = import_image_libs()
     mask = labels != 0
@@ -284,7 +251,7 @@ def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0)
     out = np.zeros(labels.shape, dtype=np.uint16)
 
     try:
-        from scipy.ndimage import distance_transform_edt  # type: ignore
+        from scipy.ndimage import distance_transform_edt
 
         # Axis 0 is the coronal/AP stack in this atlas layout.
         for i in range(labels.shape[0]):
@@ -296,7 +263,7 @@ def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0)
             dist = distance_transform_edt(~e).astype(np.float32)
             dist[~m] = 0
 
-            # Keep the old V43 behavior: normalize each slice.
+            # Normalize each slice separately.
             max_val = float(dist.max())
             if max_val > 0:
                 dist = dist / max_val
@@ -304,7 +271,7 @@ def make_distance_to_outline(labels, outline_uint16, max_distance: float = 16.0)
             out[i] = np.clip(dist * 65535.0, 0, 65535).astype(np.uint16)
 
     except Exception:
-        # Fallback: still keep outside mask zero and use the outline itself.
+        # Fallback: use the outline itself, still zero outside the mask.
         out[edge & mask] = np.uint16(65535)
 
     return out
@@ -371,7 +338,7 @@ def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distanc
     if not isinstance(baseline, dict):
         baseline = {}
 
-    # Avoid carrying previous contradictory notes forward.
+    # Drop notes left by earlier display layouts.
     for key in [
         "v41_restore_024_display_logic",
         "v42_soft_plus_clean_coronal_outline",
@@ -406,7 +373,6 @@ def patch_metadata(atlas_dir: Path, labels, reference_outline, soft_ref, distanc
         "files": files,
         "source_references": source_refs,
 
-        # This is the final useful three-channel layout. ABBA will still list native borders, but we do not use it.
         "additional_references": ACTIVE_EXTRA_NAMES,
 
         "reference_strategy": "v43c_final_024_label_outline_reference_with_two_helper_channels",

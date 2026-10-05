@@ -26,30 +26,19 @@ def folder_for(target: str) -> Path:
 
 
 def lr_axis_from_orientation(orientation: str | None, shape: tuple[int, int, int]) -> int:
-    """Return the axis that represents left/right according to metadata orientation.
-
-    LPI -> axis 0. V32.2 PIL -> axis 2.
-    If metadata is missing or weird, use a conservative fallback and report it.
-    """
+    """Return the left/right axis from the metadata orientation (LPI: 0, PIL: 2), with a reported fallback."""
     if isinstance(orientation, str) and len(orientation) >= 3:
         for i, code in enumerate(orientation[:3].upper()):
             if code in {"L", "R"}:
                 return i
-    # Fallback: the old V32 atlas used axis 0 as LR.
+    # Fallback: older builds used axis 0 as LR.
     return 0
 
 
 def make_hemispheres(annotation: np.ndarray, lr_axis: int) -> np.ndarray:
-    """Create a masked BrainGlobe/ABBA hemisphere label image.
+    """Create the hemisphere label image: 0 outside the annotation mask, 1 and 2 for the two sides.
 
-    Values:
-      0 = outside the atlas annotation mask / undefined background
-      1 = one side of the left-right axis
-      2 = other side of the left-right axis
-
-    Earlier V31 filled the entire rectangular volume with 1/2, which can behave like a third
-    always-present display layer in ABBA. This version restricts hemispheres to annotation > 0.
-    The universe survives one less phantom channel. Barely.
+    Limiting it to the mask keeps ABBA from showing it as an extra always-on layer.
     """
     if annotation.ndim != 3:
         raise RuntimeError(f"Expected 3D annotation, got shape {annotation.shape}")
@@ -82,8 +71,7 @@ def patch_metadata(folder: Path, lr_axis: int) -> dict:
     )
     metadata["hemispheres_lr_axis"] = lr_axis
     metadata["files"] = metadata.get("files", {})
-    # Do not list hemispheres as a normal file/channel entry. BrainGlobe/ABBA know the dedicated
-    # hemispheres_file key; putting it in files made the layer situation messier than necessary.
+    # Not listed under files: BrainGlobe and ABBA read the dedicated hemispheres_file key.
     metadata["files"].pop("hemispheres", None)
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"metadata_exists": True, "patched": True, "lr_axis": lr_axis}

@@ -69,9 +69,7 @@ def export_tiffs(folder: Path) -> dict[str, Any]:
     ref = normalize_reference(load_nifti_array(reference_nii))
     ann = normalize_annotation(load_nifti_array(annotation_nii))
 
-    # BrainGlobe core reads these via tifffile.imread. Keep array order identical
-    # to the NIfTI data for now. If ABBA later complains visually, orientation is
-    # the next boss monster, because of course it is.
+    # BrainGlobe reads these with tifffile.imread; the array order matches the NIfTI data.
     tifffile.imwrite(str(reference_tiff), ref, photometric="minisblack")
     tifffile.imwrite(str(annotation_tiff), ann, photometric="minisblack")
 

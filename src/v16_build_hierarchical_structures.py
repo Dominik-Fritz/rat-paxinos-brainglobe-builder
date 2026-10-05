@@ -17,7 +17,7 @@ console = Console()
 
 ROOT_ID = 997
 
-# Artificial container IDs. Keep them high and outside Paxinos label range.
+# Artificial container IDs, kept high and outside the Paxinos label range.
 CONTAINERS = [
     (998000, "Brain major divisions", "major_divisions", ROOT_ID, [240, 240, 240]),
     (998100, "Forebrain", "forebrain", 998000, [220, 230, 255]),
@@ -124,7 +124,7 @@ def match_parent(structure: dict[str, Any]) -> tuple[int, str, str]:
     if re.search(r"medulla|medullary|solitary|nucleus ambiguus|inferior olive|olive|cuneate|gracile|hypoglossal|vagal|area postrema|raphe magnus", text):
         return CONTAINER_BY_ACRONYM["medulla"], "medulla_keyword", "medium"
 
-    # Broad fallback: if names sound like forebrain but not specific
+    # Broad fallback for unspecific forebrain names.
     if re.search(r"pallium|subpallium|telencephalon|diencephalon|forebrain", text):
         return CONTAINER_BY_ACRONYM["pallium_subpallium_unsorted"], "broad_forebrain_keyword", "low"
 
@@ -157,7 +157,7 @@ def make_container_structures() -> list[dict[str, Any]]:
 def apply_hierarchy(path: Path) -> dict[str, Any]:
     structures = json.loads(path.read_text(encoding="utf-8"))
 
-    # Remove old V16 artificial containers if rerunning.
+    # Remove artificial containers from a previous run.
     structures = [s for s in structures if int(s.get("id")) not in CONTAINER_BY_ID]
 
     root_entries = [s for s in structures if int(s.get("id")) == ROOT_ID]

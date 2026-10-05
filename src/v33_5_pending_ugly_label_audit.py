@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-V33.5 Pending / Ugly Label Audit
-================================
+"""Read-only audit of remaining pending or awkward labels; writes prioritized CSV reports.
 
-Read-only audit for the rat Paxinos BrainGlobe atlas label/ontology cleanup.
-
-This script DOES NOT modify:
-- annotation.nii.gz
-- annotation.tiff
-- structures.json
-- metadata.json
-- resources/label_curation/*.csv
-
-It inspects the currently installed atlas and the curation resource, then writes
-prioritized CSV reports for remaining ugly/pending/problematic labels.
+Nothing in the atlas or the curation resource is modified.
 """
 
 from __future__ import annotations
@@ -35,7 +22,7 @@ RESOURCE_REL = Path("resources") / "label_curation" / "Paxinos_Watson_Labels_Acr
 REPORT_REL = Path("reports") / "v33_5_pending_ugly_label_audit"
 
 IMPORTANT_KEYWORDS = [
-    # user/project critical or commonly used neuroscience targets
+    # Regions that matter most in practice.
     "amyg", "basolateral", "central amyg", "lateral amyg", "bed nucleus",
     "sept", "septal", "septofimbrial", "medial sept", "lateral sept",
     "hippoc", "dentate", "ca1", "ca2", "ca3", "subiculum",
@@ -246,7 +233,7 @@ def path_for_structure(s: Dict[str, Any], by_id: Dict[int, Dict[str, Any]]) -> T
 
 
 def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[int, int], Dict[str, Any]]:
-    """Try to compute label voxel counts. This is optional and may be skipped."""
+    """Count voxels per label if possible; optional."""
     info: Dict[str, Any] = {
         "attempted": False,
         "source": None,
@@ -255,17 +242,17 @@ def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[
     }
     counts: Dict[int, int] = {}
     try:
-        import numpy as np  # type: ignore
+        import numpy as np
     except Exception as e:
         info["error"] = f"numpy unavailable: {e}"
         return counts, info
 
-    # Prefer NIfTI if nibabel is installed; it is usually memory-safe enough for this atlas.
+    # Prefer NIfTI when nibabel is available.
     if annotation_nii.exists():
         info["attempted"] = True
         info["source"] = str(annotation_nii)
         try:
-            import nibabel as nib  # type: ignore
+            import nibabel as nib
             img = nib.load(str(annotation_nii))
             data = np.asanyarray(img.dataobj)
             values, cnts = np.unique(data, return_counts=True)
@@ -283,7 +270,7 @@ def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[
         info["attempted"] = True
         info["source"] = str(annotation_tiff)
         try:
-            import tifffile  # type: ignore
+            import tifffile
             data = tifffile.imread(str(annotation_tiff))
             values, cnts = np.unique(data, return_counts=True)
             for v, c in zip(values, cnts):
@@ -486,7 +473,6 @@ def audit(project_root: Path) -> Dict[str, Any]:
         if "suspicious_parent_path" in flags:
             parent_suspicion_rows.append(row)
 
-    # Sort with priority and voxel count desc where available.
     def sort_key(r: Dict[str, Any]) -> Tuple[str, int, int]:
         vc = r.get("voxel_count")
         try:
@@ -500,7 +486,7 @@ def audit(project_root: Path) -> Dict[str, Any]:
     name_quality_rows.sort(key=sort_key)
     parent_suspicion_rows.sort(key=sort_key)
 
-    # Manual review template: start with P0/P1 plus important P2 rows. Keep it manageable.
+    # Review template: P0/P1 plus the important P2 rows.
     manual_template_rows = [r.copy() for r in queue_rows if str(r.get("priority", "")).startswith(("P0", "P1"))]
     if len(manual_template_rows) < 100:
         for r in queue_rows:
@@ -531,7 +517,7 @@ def audit(project_root: Path) -> Dict[str, Any]:
     write_csv(report_dir / "v33_5_priority_distribution.csv", priority_rows, ["priority", "count"])
     write_csv(report_dir / "v33_5_flag_distribution.csv", flag_rows, ["flag", "count"])
 
-    # Directly highlight the SN_739 style example if present.
+    # Highlight SN_739-style labels if present.
     sn739 = next((r for r in queue_rows if int(r.get("label_id", -1)) == 739), None)
 
     report = {
@@ -658,7 +644,6 @@ def write_summary(path: Path, report: Dict[str, Any]) -> None:
 def main(argv: List[str]) -> int:
     cwd = Path.cwd()
     project_root = find_project_root(cwd)
-    # Optional explicit root argument.
     if len(argv) >= 2:
         project_root = Path(argv[1]).resolve()
     report = audit(project_root)

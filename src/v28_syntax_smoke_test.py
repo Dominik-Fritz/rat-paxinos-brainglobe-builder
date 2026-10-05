@@ -7,9 +7,7 @@ from rich.table import Table
 
 console = Console()
 
-# Clean V32.2 critical path. Legacy V33-V38 scripts are intentionally not part
-# of this stable package, because the NeuroRat reference line was invalidated by
-# the affine-overlap diagnostic.
+# Files on the build's critical path; each must at least compile.
 CRITICAL = [
     "src/utils_paths.py",
     "src/parse_labels.py",
