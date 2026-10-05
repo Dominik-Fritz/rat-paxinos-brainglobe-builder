@@ -102,7 +102,7 @@ def fix_metadata(folder: Path) -> dict[str, Any]:
     metadata["atlas_name"] = metadata.get("atlas_name", ATLAS_NAME)
     metadata["title"] = metadata.get(
         "title",
-        "Paxinos-Watson Rat Brain Atlas, BrainGlobe prerelease candidate",
+        "Paxinos-Watson Rat Brain Atlas, BrainGlobe prerelease",
     )
     metadata["description"] = metadata.get(
         "description",
