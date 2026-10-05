@@ -147,10 +147,8 @@ echo.
 echo.
 set "CURRENT_STAGE=Minimal Paxinos source download and validation"
 echo [7B/30] Checking required Paxinos source data...
-REM V32.26 DATA MANAGER AUTODOWNLOAD START
-REM Ensure minimal Paxinos/Watson source data before the label analysis steps.
-REM Windows fix: do not pass --root \"%~dp0\" directly because %%~dp0 ends with a backslash.
-REM The trailing backslash can break argv quoting. Use %%~dp0. instead.
+rem Fetch the minimal Paxinos/Watson source data before the label analysis.
+rem The script folder path ends in a backslash, which breaks argv quoting, so a dot is appended.
 set "V32_26_PYEXE=%~dp0.venv\Scripts\python.exe"
 if not exist "%V32_26_PYEXE%" set "V32_26_PYEXE=python"
 set "V32_26_ROOT=%~dp0."
@@ -158,7 +156,6 @@ echo.
 echo [DATA] Checking/downloading minimal Paxinos source data...
 "%V32_26_PYEXE%" "%~dp0src\release_data_manager.py" --root "%V32_26_ROOT%" --mode ensure-minimal --include-optional
 if errorlevel 1 goto fail
-REM V32.26 DATA MANAGER AUTODOWNLOAD END
 
 set "CURRENT_STAGE=Paxinos source preflight"
 "%VENV_PY%" "src\release_data_preflight.py" || goto missing_data
