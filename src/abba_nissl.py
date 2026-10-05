@@ -1,7 +1,7 @@
-"""Strict, portable reader and renderer for the v0.3 ABBA Nissl state.
+"""Reader and Python renderer for the v0.3 ABBA Nissl state.
 
-The reader deliberately does not use the BDV ``project.qpproj`` locations.  The
-only image input is a separately verified, version-pinned WHS Nissl volume.
+The only image input is the version-pinned WHS Nissl volume; the project.qpproj
+locations are never used.
 """
 from __future__ import annotations
 
@@ -177,9 +177,8 @@ def validate_abba(path: Path, expected_hash: str = ABBA_SHA256) -> AbbaState:
         src, tgt = np.asarray(tps.get("srcPts"), float).T, np.asarray(tps.get("tgtPts"), float).T
         if src.ndim != 2 or src.shape[1] != 2 or src.shape != tgt.shape or src.shape[0] < 3 or not np.isfinite(src).all() or not np.isfinite(tgt).all():
             raise NisslBuildError("ABBA_SPLINE", f"invalid ThinplateSpline landmarks at slice {slice_number}")
-        # Propagated registrations have identical TPS control points but a
-        # slice-specific bounded Z interval.  Count/reuse the scientific 2-D
-        # mapping rather than treating that bookkeeping bound as a new warp.
+        # Propagated registrations share TPS control points and differ only in a
+        # bookkeeping Z bound, so they count as one 2-D mapping.
         canonical = json.dumps(tps, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode()).hexdigest()
         transform_hashes.append(digest)
@@ -286,17 +285,15 @@ def invert_bigwarp_tps(target: np.ndarray, source_points: np.ndarray,
         step = np.empty((len(indexes), 2), dtype=np.float64)
         step[:, 0] = (jac[:, 1, 1] * residual[:, 0] - jac[:, 0, 1] * residual[:, 1]) / determinant
         step[:, 1] = (-jac[:, 1, 0] * residual[:, 0] + jac[:, 0, 0] * residual[:, 1]) / determinant
-        # BigWarp's iterative wrapper uses a controlled optimizer. Limit a
-        # Newton jump to 0.5 mm so remote points cannot overshoot/fold while
-        # already-converged pixels remain frozen.
+        # Cap a Newton step at 0.5 mm so distant points cannot overshoot or fold;
+        # converged pixels stay frozen.
         length = np.linalg.norm(step, axis=1)
         scale = np.minimum(1.0, 0.5 / np.maximum(length, 1e-15))
         estimate[indexes] -= step * scale[:, None]
     worst = float(np.max(residual_norm[active])) if np.any(active) else 0.0
     if allow_invalid:
-        # Difficult points are rare and usually occur near strongly warped
-        # boundaries. Recover them individually with a trust-region solver
-        # before declaring that no inverse sample exists.
+        # The few points that fail, usually near strongly warped boundaries, get a
+        # trust-region solve of their own.
         recover = active | np.logical_not(np.isfinite(estimate).all(axis=1))
         for index in np.flatnonzero(recover):
             def objective(point):

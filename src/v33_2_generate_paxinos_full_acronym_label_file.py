@@ -26,8 +26,7 @@ for line in CORTEX.read_text(encoding='utf-8').splitlines():
         raise ValueError(f'Could not parse cortex label line: {line!r}')
     cortex[int(m.group(1))] = {'acronym':m.group(2), 'name':m.group(3)}
 
-# Exact-name mappings for high-value/common neuroanatomical structures.
-# Conservative: only very common abbreviations or direct Paxinos/cortex conventions.
+# Exact-name mappings, limited to common abbreviations and Paxinos/cortex conventions.
 manual = {
     # Amygdala and extended amygdala
     'anterior amygdaloid area': ('AA','manual_common_neuroanatomy','standard abbreviation for anterior amygdaloid area'),
@@ -445,10 +444,10 @@ def make_from_words(name):
         words = re.findall(r'[A-Za-z0-9]+', s)
         parts = [w[:3].title() for w in words[:3]] or ['Lbl']
     ac = ''.join(parts[:5])
-    # Avoid crazy length
+    # Cap the length.
     return clean_acro(ac)
 
-# Known exact line typos to fix in proposed_name but keep original in raw column
+# Known typos, fixed in proposed_name; the raw column keeps the original.
 name_fixes = {
     'temporal associatin cortex':'temporal association cortex',
     'frontal assocn cortex':'frontal association cortex',
@@ -457,7 +456,6 @@ name_fixes = {
     'medulla-oblongolata':'medulla oblongata',
 }
 
-# Generate raw candidate rows
 out=[]
 for r in rows:
     lid = r['label_id']; name = r['paxinos_name']; norm=name.strip()
@@ -470,7 +468,7 @@ for r in rows:
         status='do_not_apply_until_review'
     elif lid in cortex:
         ac = cortex[lid]['acronym']
-        # Keep --- as CTX container style? Replace with ID specific safe container if ---.
+        # A '---' cortex container gets a unique ID-based placeholder.
         if ac == '---':
             ac = f'CTX{lid}'
             basis='paxinos_cortex_file_container'
@@ -495,12 +493,12 @@ for r in rows:
     ac = clean_acro(ac)
     out.append({**r, 'proposed_acronym_raw':ac, 'proposed_name':proposed_name, 'acronym_basis':basis, 'basis_detail':detail, 'confidence':conf, 'review_status':status})
 
-# Ensure unique acronyms while preserving originals in raw field.
+# Make acronyms unique; the raw field keeps the originals.
 seen={}
 for item in out:
     ac = item['proposed_acronym_raw'] or f'LBL{item["label_id"]}'
     if ac in seen:
-        # duplicates official/cortex are dangerous; suffix label id and mark.
+        # Duplicates get the label ID as a suffix and are flagged.
         new_ac = f'{ac}_{item["label_id"]}'
         item['duplicate_resolution'] = f'Acronym {ac} duplicated with label_id {seen[ac]}; suffixed with label_id for uniqueness.'
         item['proposed_acronym'] = clean_acro(new_ac)
@@ -513,30 +511,26 @@ for item in out:
         item['proposed_acronym'] = ac
         seen[ac] = item['label_id']
 
-# Re-check duplicates after suffix
 assert len({x['proposed_acronym'] for x in out}) == len(out)
 
-# Write pattern txt: ID<TAB>Acronym<TAB>"Name"
+# Pattern file: ID<TAB>Acronym<TAB>"Name"
 pattern = RES/'Paxinos_Watson_Labels_Acronyms.txt'
 with pattern.open('w', encoding='utf-8', newline='') as f:
     for item in out:
         nm = item['proposed_name'].replace('"','\"')
         f.write(f'{item["label_id"]}\t{item["proposed_acronym"]}\t"{nm}"\n')
 
-# Write with basis CSV
 basis_csv = RES/'Paxinos_Watson_Labels_Acronyms_with_basis.csv'
 fields = ['label_id','r','g','b','paxinos_name','proposed_acronym','proposed_name','acronym_basis','basis_detail','confidence','review_status','duplicate_resolution']
 with basis_csv.open('w', encoding='utf-8', newline='') as f:
     w=csv.DictWriter(f, fieldnames=fields)
     w.writeheader(); w.writerows([{k:item.get(k,'') for k in fields} for item in out])
 
-# High confidence subset
 high_csv = RES/'Paxinos_Watson_Labels_Acronyms_high_confidence_review.csv'
 with high_csv.open('w', encoding='utf-8', newline='') as f:
     w=csv.DictWriter(f, fieldnames=fields)
     w.writeheader(); w.writerows([{k:item.get(k,'') for k in fields} for item in out if item['confidence'] in ('official_local','high')])
 
-# Low confidence subset
 low_csv = RES/'Paxinos_Watson_Labels_Acronyms_needs_review.csv'
 with low_csv.open('w', encoding='utf-8', newline='') as f:
     w=csv.DictWriter(f, fieldnames=fields)
@@ -548,7 +542,6 @@ legend.write_text('''# Acronym basis legend\n\nThis directory contains a complet
 readme = OUTROOT/'README_V33_2_PAXINOS_FULL_ACRONYM_LABEL_FILE.md'
 readme.write_text(f'''# V33.2 Paxinos full acronym label file\n\nGenerated: {datetime.datetime.now().isoformat(timespec='seconds')}\n\nThis package creates a complete Paxinos/Watson label acronym proposal file from the uploaded raw label files.\n\nInput files:\n\n- `Paxinos_Watson_Labels.txt`\n- `Paxinos_Watson_Labels_Cortex.txt`\n\nCore output:\n\n- `resources/label_curation/Paxinos_Watson_Labels_Acronyms.txt`\n- `resources/label_curation/Paxinos_Watson_Labels_Acronyms_with_basis.csv`\n\nThe text file follows the same simple pattern as the cortex label file:\n\n```text\nlabel_id<TAB>acronym<TAB>"name"\n```\n\nThis package does not modify annotation volumes or BrainGlobe atlas files.\n\nRecommended GitHub integration path:\n\n```text\nresources/label_curation/Paxinos_Watson_Labels_Acronyms.txt\nresources/label_curation/Paxinos_Watson_Labels_Acronyms_with_basis.csv\nresources/label_curation/ACRONYM_BASIS_LEGEND.md\n```\n\nImportant policy:\n\n- Use raw Paxinos names as primary ID/name source.\n- Use `Paxinos_Watson_Labels_Cortex.txt` as direct source for cortex acronyms.\n- Use common/Allen-style neuroanatomy only as documented proposed acronym basis.\n- Keep all low-confidence generated acronyms review-only.\n- Never change annotation IDs or voxel values.\n''', encoding='utf-8')
 
-# Summary/report
 from collections import Counter
 cnt_basis=Counter(x['acronym_basis'] for x in out)
 cnt_conf=Counter(x['confidence'] for x in out)
@@ -578,10 +571,8 @@ report = {
 summary = REPORT/'v33_2_paxinos_full_acronym_label_file_summary.txt'
 summary.write_text(f'''V33.2 Paxinos Full Acronym Label File\n========================================================================\nGenerated: {report['generated_at']}\nDoes modify atlas: False\n\nInputs:\n- {RAW.name}\n- {CORTEX.name}\n\nOutputs:\n- resources/label_curation/Paxinos_Watson_Labels_Acronyms.txt\n- resources/label_curation/Paxinos_Watson_Labels_Acronyms_with_basis.csv\n- resources/label_curation/Paxinos_Watson_Labels_Acronyms_high_confidence_review.csv\n- resources/label_curation/Paxinos_Watson_Labels_Acronyms_needs_review.csv\n- resources/label_curation/ACRONYM_BASIS_LEGEND.md\n\nCounts:\n- total labels: {len(out)}\n- unique acronyms: {len({x['proposed_acronym'] for x in out})}\n- cortex exact acronyms: {cnt_basis.get('paxinos_cortex_file_exact_id',0)}\n- common/manual high-confidence acronyms: {cnt_basis.get('manual_common_neuroanatomy',0)}\n- rule-generated acronyms: {cnt_basis.get('rule_generated_from_paxinos_name',0)}\n- raw placeholder rows: {cnt_basis.get('paxinos_placeholder',0)}\n\nConfidence counts:\n{json.dumps(dict(cnt_conf), indent=2, ensure_ascii=False)}\n\nReview status counts:\n{json.dumps(dict(cnt_status), indent=2, ensure_ascii=False)}\n\nRecommended next step:\n- Review `Paxinos_Watson_Labels_Acronyms_with_basis.csv`.\n- Use this as the project-integrated metadata source for later automatic label curation.\n- Do not apply low-confidence generated labels automatically.\n- Keep annotation IDs and voxel values unchanged.\n''', encoding='utf-8')
 
-# Copy generator script into package
 Path(__file__).rename(SRC/'v33_2_generate_paxinos_full_acronym_label_file.py')
 
-# Zip
 zip_path = Path('/mnt/data/v33_2_paxinos_full_acronym_label_file_package.zip')
 if zip_path.exists(): zip_path.unlink()
 with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as z:
