@@ -30,8 +30,7 @@ class CollapseTests(unittest.TestCase):
         self.assertIn("588/588", out[0])
 
     def test_a_logger_prefix_does_not_defeat_the_pattern(self):
-        # The jars print through several paths; anchoring the patterns to the
-        # start of the line would put the spam straight back on the console.
+        # A logger prefix must not stop a pattern from matching.
         out = collapse([f"[INFO] ch.epfl.biop: Action registered in observer: Slice {i}"
                         for i in range(900)])
         self.assertEqual(len(out), 1)
@@ -62,8 +61,7 @@ class CollapseTests(unittest.TestCase):
 
 class DenominatorTests(unittest.TestCase):
     def test_denominator_comes_from_the_pinned_manifest(self):
-        # The same file that pins the planes states their count, so the bar
-        # cannot drift from what is exported.
+        # The denominator comes from the manifest that pins the planes.
         self.assertEqual(cp.plane_total(), 588)
 
 
@@ -109,11 +107,7 @@ class LogTests(unittest.TestCase):
 
 
 class ResilienceTests(unittest.TestCase):
-    """A defect in this cosmetic layer must not be able to fail a build.
-
-    The wrapper's exit code is what run_builder.bat branches on, and the filter
-    will first run on machines nobody can debug from here.
-    """
+    """A defect in this cosmetic layer must never fail a build."""
 
     @staticmethod
     def _run_with_broken_collapser(exit_code: int) -> subprocess.CompletedProcess:
@@ -150,8 +144,7 @@ class ResilienceTests(unittest.TestCase):
         self.assertEqual(self._run_with_broken_collapser(4).returncode, 4)
 
     def test_non_ascii_output_does_not_break_the_run(self):
-        # A user profile with an umlaut is ordinary on the machines this has to
-        # run on, and the console code page there is not UTF-8.
+        # User profiles with umlauts are common, and the console code page is not UTF-8.
         folder = Path(tempfile.mkdtemp())
         child = folder / "child.py"
         child.write_text(

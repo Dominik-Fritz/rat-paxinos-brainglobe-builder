@@ -250,9 +250,7 @@ class NativeTransformRoundtripTests(unittest.TestCase):
             )
 
     def test_last_ulp_bound_noise_is_not_reported_as_a_changed_interval(self):
-        # Moving the fixed source off origin zero perturbs the recomputed bounds
-        # by ~2e-15 mm. Exact float equality reported all 588 sources as changed
-        # and buried the real differences in a 0.9 MB diff.
+        # Moving the fixed source off origin zero perturbs the recomputed bounds by ~2e-15 mm.
         with tempfile.TemporaryDirectory() as temporary:
             first = Path(temporary) / "first.abba"
             second = Path(temporary) / "second.abba"
@@ -285,8 +283,7 @@ class NativeTransformRoundtripTests(unittest.TestCase):
             self.assertEqual(result["bounds_max_abs_delta_mm"], 2.0)
 
     def test_existing_roundtrip_artifact_is_cleared_before_native_save(self):
-        # ABBA refuses to overwrite; a leftover artifact from an earlier build
-        # otherwise fails every rebuild at state_save before anything renders.
+        # ABBA refuses to overwrite, so a leftover file would fail every rebuild.
         with tempfile.TemporaryDirectory() as temporary:
             authoritative = Path(temporary) / "state.abba"
             destination = Path(temporary) / "reports" / "native_state_roundtrip.abba"
@@ -574,7 +571,7 @@ class VisualParityApprovalTests(unittest.TestCase):
             self.assertEqual(approval["notes"], "AP 10-597 geprueft")
 
     def test_a_later_build_does_not_inherit_the_approval(self):
-        # The whole point: different voxels, therefore a different hash.
+        # Different voxels, different hash.
         with tempfile.TemporaryDirectory() as temporary:
             path = self._record(temporary)
             with mock.patch.object(renderer, "VISUAL_PARITY_APPROVAL", path):
@@ -632,9 +629,8 @@ class VisualParityApprovalTests(unittest.TestCase):
 
 class OutputHashTests(unittest.TestCase):
     def test_report_records_a_container_free_content_hash(self):
-        # output_sha256 hashes the TIFF file, so it cannot answer whether two
-        # runs produced the same voxels; comparing it against a voxel hash once
-        # produced a false non-reproducibility result.
+        # output_sha256 hashes the TIFF file and cannot tell whether two runs
+        # produced the same voxels.
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
             encoding="utf-8"
         )
@@ -709,9 +705,7 @@ class AlignmentGuardTests(unittest.TestCase):
 
 class ReconstructionInstallStatusTests(unittest.TestCase):
     def test_reconstruction_records_whether_it_reached_an_atlas(self):
-        # write_report() merges, so a persisted reconstruction block outlives
-        # the run that wrote it. Without a status a failed install -- or a later
-        # failed run -- leaves it reading as a complete success.
+        # write_report() merges, so without a status a failed install would read as a success.
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
             encoding="utf-8"
         )
@@ -741,9 +735,8 @@ class NativeExportZGridTests(unittest.TestCase):
         self.assertIn('"native_export_margin_z_um": NATIVE_EXPORT_MARGIN_Z_UM', source)
 
     def test_margin_is_an_odd_multiple_of_the_half_voxel_phase_correction(self):
-        # ABBA aligns the export box to slice boundaries, half a voxel off the
-        # slice centres. Only an odd number of half-voxels restores phase 0;
-        # a whole-voxel change (0 vs 40 um) measurably does nothing.
+        # The export box starts on a slice boundary; only an odd number of half
+        # voxels restores phase 0.
         half_voxel_um = renderer.VOXEL_SIZE_MM * 1000.0 / 2.0
         multiples = renderer.NATIVE_EXPORT_MARGIN_Z_UM / half_voxel_um
         self.assertAlmostEqual(multiples, round(multiples))
@@ -756,7 +749,7 @@ class NativeExportZGridTests(unittest.TestCase):
 
 
 class NativeExportCoverageEvidenceTests(unittest.TestCase):
-    """Stage-2 evidence: what ABBA exported, before Python resamples anything."""
+    """What ABBA exported, before Python resamples anything."""
 
     def test_native_z_profile_and_plane_selection_are_recorded(self):
         import sys
@@ -858,7 +851,7 @@ class FixedAtlasViewTests(unittest.TestCase):
 
 
 class NativeSliceStateAuditTests(unittest.TestCase):
-    """The old audit called getTolerance()/getMaxIteration(); neither exists."""
+    """ABBA 0.11 has no getTolerance() or getMaxIteration(); they must not be called."""
 
     @staticmethod
     def _abba(count=588, spacing=renderer.VOXEL_SIZE_MM, registrations=1):
@@ -893,8 +886,7 @@ class NativeSliceStateAuditTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "src/native_abba_renderer.py").read_text(
             encoding="utf-8"
         )
-        # The docstring names the dead API deliberately; what must not come back
-        # is a call to it, so inspect the executable body only.
+        # Only the executable body counts, so the docstring is skipped.
         body = source.split("def _audit_native_slice_state", 1)[1].split('"""', 2)[2]
         body = body.split("\ndef ", 1)[0]
         self.assertNotIn("getTolerance", body)
