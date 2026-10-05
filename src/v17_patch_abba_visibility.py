@@ -125,16 +125,9 @@ def discover_abba_installations(explicit: str | None = None) -> list[dict[str, A
 
 
 def evaluate_patch_results(patch_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Decide whether a patch run passed.
+    """Pass when every applicable installation succeeded and at least one did.
 
-    Every discovered installation this patch applies to must succeed, and at
-    least one must. Files without the expected anchor are a different ABBA
-    layout, not a failure: discovery deliberately scans broadly and therefore
-    also finds copies belonging to unrelated projects. One such source checkout
-    used to fail the whole build.
-
-    If nothing at all is applicable the run still fails -- that would mean ABBA
-    changed its structure, which is exactly what should be noticed.
+    Files without the expected anchor belong to a different ABBA layout and are skipped.
     """
     applicable = [p for p in patch_results if not p.get("not_applicable")]
     skipped = [p for p in patch_results if p.get("not_applicable")]
@@ -172,9 +165,7 @@ def patch_abba_py(abba_py: Path, dry_run: bool = False) -> dict[str, Any]:
         return result
 
     if "def add_brainglobe_atlases(ij):" not in text:
-        # A discovered file that does not contain the function this patch edits
-        # is a different ABBA layout, not a failure. A source checkout belonging
-        # to an unrelated project used to fail the whole build this way.
+        # A file without the patched function is a different ABBA layout, not a failure.
         result["not_applicable"] = "no def add_brainglobe_atlases(ij); different ABBA layout"
         return result
 

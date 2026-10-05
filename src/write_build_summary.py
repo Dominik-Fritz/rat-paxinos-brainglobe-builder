@@ -40,10 +40,8 @@ def main() -> int:
     if isinstance(refs, str):
         refs = [refs]
     nissl_installed = bool(atlas and (atlas / "waxholm_anatomy_reference.tiff").is_file())
-    # run_builder.bat passes YES, NO, or FAILED. Treating anything but YES as
-    # "not requested" reported a *failed* optional render as "disabled for this
-    # build" -- wording that means the user chose --without-nissl -- and also
-    # suppressed the Ch03 report that records why it failed.
+    # run_builder.bat passes YES, NO or FAILED. A failed optional render must not
+    # read as if --without-nissl had been chosen.
     nissl_mode = args.nissl.upper()
     nissl_disabled = nissl_mode == "NO"
     nissl_failed = nissl_mode == "FAILED"
@@ -65,9 +63,8 @@ def main() -> int:
         if nissl_requested and not build_failed and ch03_report_path.is_file() else {}
     )
     import_report = ch03_report.get("ch03_import", {})
-    # write_report() merges into the existing JSON, so abba_reconstruction can be
-    # a *previous* run's success block. Never present it as this run's result
-    # when this run's render failed.
+    # write_report() merges, so abba_reconstruction may be a previous run's block.
+    # Never show it as this run's result when this render failed.
     native_failure = ch03_report.get("native_failure", {}) if nissl_failed else {}
     reconstruction_report = {} if nissl_failed else ch03_report.get("abba_reconstruction", {})
     coverage_lines: list[str] = []
@@ -75,9 +72,8 @@ def main() -> int:
     install_status = "not recorded"
     if reconstruction_report:
         reconstruction = reconstruction_report.get("reconstruction", reconstruction_report)
-        # "pending" means the render finished but installation did not; the
-        # figures below then describe a rendered volume that never reached an
-        # atlas. Older reports predate the field and report "not recorded".
+        # "pending": rendered but not installed, so the figures never reached an atlas.
+        # Older reports do not have the field.
         install_status = reconstruction.get("install_status", "not recorded")
         roundtrip_criterion = reconstruction.get("transform_roundtrip_criterion", "not recorded")
         if "blank_registered_plane_count" in reconstruction:

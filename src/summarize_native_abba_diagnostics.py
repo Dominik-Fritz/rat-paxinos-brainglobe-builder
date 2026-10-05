@@ -9,10 +9,8 @@ from pathlib import Path
 import numpy as np
 
 
-# Kept in step with native_abba_renderer.NATIVE_EXPORT_MARGIN_Z_UM (a test
-# asserts they match). A report produced with the earlier 40 um margin came from
-# a Z grid half a voxel off the slice centres, so its plane counts and
-# intensities are not comparable with a current run.
+# Must equal native_abba_renderer.NATIVE_EXPORT_MARGIN_Z_UM (a test checks this).
+# Reports made with a different margin are not comparable.
 CURRENT_EXPORT_MARGIN_Z_UM = 60.0
 
 
@@ -43,7 +41,7 @@ def summarize(report: dict) -> dict:
             dark_ratios.append(float(after) / float(before))
     spatial = reconstruction.get("spatial_diagnostics", {})
     alignment = reconstruction.get("alignment_diagnostics") or {}
-    # Stage-2 evidence: ABBA's own exported Z profile, before Python resampling.
+    # ABBA's own exported Z profile, before the Python resampling.
     grid = reconstruction.get("native_grid_diagnostics", {}) or {}
     native_planes = grid.get("native_plane_intensity_diagnostics", []) or []
     native_empty = sorted(int(item["native_ap_index"]) for item in native_planes
@@ -62,12 +60,10 @@ def summarize(report: dict) -> dict:
         "native_backend_verified": reconstruction.get("native_backend_verified"),
         "visual_parity_status": reconstruction.get("visual_parity_status"),
         "source_sha256": reconstruction.get("source", {}).get("sha256"),
-        # Compare this between runs to judge reproducibility; output_sha256 also
-        # covers the TIFF container and answers a different question.
+        # Compare this between runs; output_sha256 also covers the TIFF container.
         "output_content_sha256": reconstruction.get("output_content_sha256"),
         "abba_state_sha256": reconstruction.get("abba_state_sha256"),
-        # Keep the scalar grid facts; the 589-plane Z profile and the 608-entry
-        # selection map stay in the full report so this file remains readable.
+        # The full Z profile and the selection map stay in the full report.
         "native_grid_diagnostics": {
             key: value for key, value in (grid or {}).items()
             if key not in ("native_plane_intensity_diagnostics", "native_plane_selection")
@@ -91,8 +87,7 @@ def summarize(report: dict) -> dict:
              "native_export_empty_count", "sampling_loss_count", "no_native_plane_count")
         } if classification else None,
         "output_to_source_nonzero_mean_ratio": _quantiles(dark_ratios),
-        # Centroid deltas compare unequal supports and overstate SI; the
-        # correlation-based alignment below is the number to trust.
+        # Centroid deltas overstate SI; the correlation-based alignment below is reliable.
         "median_centroid_delta_si_lr_voxels": spatial.get("median_centroid_delta_si_lr_voxels"),
         "median_centroid_delta_si_lr_um": spatial.get("median_centroid_delta_si_lr_um"),
         "alignment_median_shift_si_lr_um": alignment.get("median_shift_si_lr_um"),

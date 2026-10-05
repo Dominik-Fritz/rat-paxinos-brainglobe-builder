@@ -1,25 +1,6 @@
 #!/usr/bin/env python3
-"""Test whether the native Ch03 render is bit-reproducible.
-
-Read-only probe. It restores the authoritative state once, prepares the slices
-exactly as the renderer does, then runs the production export twice with
-identical parameters and hashes the result at two points:
-
-  1. the native BDV volume as ABBA exports it, and
-  2. the finished target volume, reproducing the renderer's tail
-     (_source_to_ap_si_lr -> uint16 -> duplicate the anterior edge plane),
-
-so the second hash is directly comparable with `output_sha256` in
-reports/ch03_nissl/ch03_nissl_report.json.
-
-That separates three questions:
-  * do two exports in ONE session agree?           -> intra-session determinism
-  * does this session agree with the last build?   -> cross-session determinism
-  * if not, is the difference numerical noise or structural?
-
-Motivation: two builds with identical pinned inputs and an unchanged pixel path
-produced different output_sha256 values (14fa96c8..., a29245d3...) while their
-geometry and intensity statistics were identical. Nothing is installed here.
+"""Read-only probe: run the production export twice in one session and hash the
+native and the finished volume, to test whether the render is bit-reproducible.
 """
 from __future__ import annotations
 

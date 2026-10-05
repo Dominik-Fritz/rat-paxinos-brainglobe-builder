@@ -1,21 +1,6 @@
 #!/usr/bin/env python3
-"""Measure native ABBA slice geometry around the export-thickness action.
-
-Read-only probe. It restores the authoritative state exactly as the renderer
-does, then records slice selection and per-slice geometry at three points:
-after the state load, after selecting all slices, and after the
-match-neighbours thickness action. Nothing is exported or installed.
-
-Motivation: the instrumented build proved that 150 of 151 missing planes were
-already empty in ABBA's own BDV export, and that the export carries ~0.487 of
-the source intensity. Both are what one expects when the slices do not fill the
-40 um export voxel, i.e. when set_slices_thickness_match_neighbors() did not
-take effect. The renderer discards that command's return value and selects
-slices immediately before calling it, so neither its success nor the selection
-is currently verified.
-
-Method names are discovered by reflection rather than assumed: an earlier audit
-in this project failed because SliceSources has no getTolerance().
+"""Read-only probe: record ABBA slice geometry after the state load, the slice
+selection and the match-neighbours thickness action. Nothing is exported.
 """
 from __future__ import annotations
 
@@ -111,9 +96,8 @@ def main() -> int:
         getters = _numeric_getters(first)
         stages = [_snapshot(abba, getters, "after_state_load")]
 
-        # The renderer selects and applies thickness back to back. Separate the
-        # two here, with an explicit barrier after each, so a lost selection and
-        # an ineffective thickness command cannot be confused.
+        # Selection and thickness each get their own barrier, so a lost selection
+        # and an ineffective thickness command can be told apart.
         abba.select_all_slices()
         abba.wait_for_end_of_tasks()
         stages.append(_snapshot(abba, getters, "after_select_all_and_wait"))

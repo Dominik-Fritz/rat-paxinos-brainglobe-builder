@@ -1,24 +1,6 @@
 #!/usr/bin/env python3
-"""Compare native BDV export parameters against the measured Z defect.
-
-Read-only probe. It restores the authoritative state and prepares the slices
-exactly as the renderer does (select all, match-neighbour thickness, task
-barrier), then runs ExportResampledSlicesToBDVSourceCommand several times with
-different parameters and records only the resulting native Z profile. Nothing
-is resampled onto the target grid, written to an atlas, or installed.
-
-Established before this probe:
-  - the slices going in are correct: 588 sources, uniform 0.04 mm centres,
-    40 um thickness after the thickness action, all selected;
-  - the export grid comes out exactly half a voxel off the slice lattice
-    (offset 46.5 voxels), every plane landing on a slice boundary;
-  - the exported volume holds 152/589 all-zero planes and ~0.487 of the source
-    intensity, while Python's later resampling preserves 98.8% of it.
-
-margin_z moves the export box origin and therefore the Z phase; interpolate
-decides whether Z sampling blends at all. Varying them separates a phase
-artefact from an interpolation artefact. All exports share one JVM session, so
-the expensive state restore happens once.
+"""Read-only probe: run ABBA's BDV export with several margin_z and interpolate
+settings and record the native Z profile of each. Nothing is written or installed.
 """
 from __future__ import annotations
 
@@ -38,12 +20,8 @@ import ch03_nissl_pipeline as pipeline
 VOXEL_MM = renderer.VOXEL_SIZE_MM
 
 VARIANTS = [
-    # Round 1 established that only the Z phase matters: margin 0 and 40 differ
-    # by a whole voxel and behave identically (phase 0.5, ~0.48 intensity),
-    # while 20 um lands the grid on the slice centres (phase 0, 1 empty plane,
-    # 0.96 intensity). Round 2 compares the two margins that give phase 0 and
-    # differ only in how much Z margin they add, because 20 um leaves the last
-    # registered target AP just outside the exported stack.
+    # 0 and 40 um put the grid on the slice boundaries, 20 and 60 um on the centres;
+    # 20 um leaves the last section just outside the stack.
     {"name": "margin20_interpolate", "margin_z": 20.0, "interpolate": True},
     {"name": "margin60_interpolate", "margin_z": 60.0, "interpolate": True},
 ]
@@ -73,11 +51,7 @@ def _native_volume_and_transform(ij, sac) -> tuple[np.ndarray, np.ndarray]:
 
 def _target_ap_coverage(volume: np.ndarray, matrix: np.ndarray,
                         target_ap: np.ndarray) -> dict:
-    """Would the renderer's nearest-plane AP selection reach every target plane?
-
-    Uses the exact arithmetic of _source_to_ap_si_lr so a margin that aligns the
-    phase but drops the last registered section cannot pass unnoticed.
-    """
+    """Check with the renderer's own arithmetic that every target AP plane is reachable."""
     start = (float(matrix[2, 3]) - renderer.TARGET_ORIGIN_XYZ_MM[2]) / VOXEL_MM
     outside, empty_native = [], []
     for source_id, ap in enumerate(int(value) for value in target_ap):
