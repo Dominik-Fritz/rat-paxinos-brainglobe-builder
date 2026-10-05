@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 V44 patch: hide ABBA native 'borders' display channel for BrainGlobe atlases.
 

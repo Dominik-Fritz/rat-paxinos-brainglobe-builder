@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 V43C FINAL - based on the 0.2.4 final orientation/display logic.
 
@@ -93,9 +92,9 @@ def stamp() -> str:
 
 def import_image_libs():
     try:
-        import numpy as np  # type: ignore
-        import nibabel as nib  # type: ignore
-        import tifffile  # type: ignore
+        import numpy as np
+        import nibabel as nib
+        import tifffile
     except Exception as exc:
         raise RuntimeError("Missing numpy/nibabel/tifffile in the active environment.") from exc
     return np, nib, tifffile
@@ -252,7 +251,7 @@ def make_soft_region_fill(labels, sigma: float):
 
     if sigma > 0:
         try:
-            from scipy.ndimage import gaussian_filter  # type: ignore
+            from scipy.ndimage import gaussian_filter
             soft = gaussian_filter(out.astype(np.float32), sigma=float(sigma))
             soft[~mask] = 0
             out = np.clip(soft, 0, 255).astype(np.uint8)
@@ -268,7 +267,7 @@ def make_distance_to_outline(labels, outline_uint16):
     out = np.zeros(labels.shape, dtype=np.uint16)
 
     try:
-        from scipy.ndimage import distance_transform_edt  # type: ignore
+        from scipy.ndimage import distance_transform_edt
         for i in range(labels.shape[0]):
             m = mask[i]
             if not m.any():

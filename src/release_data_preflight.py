@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Release data preflight for the Rat Paxinos/Watson BrainGlobe Builder.
 """

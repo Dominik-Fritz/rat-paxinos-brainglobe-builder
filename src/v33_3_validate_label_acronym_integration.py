@@ -263,7 +263,7 @@ def main() -> int:
         report["passed"] = False
         report["errors"].append(f"Resource CSV missing columns: {missing_cols}")
     else:
-        structures_path = selected_atlas / "structures.json"  # type: ignore[operator]
+        structures_path = selected_atlas / "structures.json"
         structures = load_structures(structures_path)
         structures_by_id = {int(s["id"]): s for s in structures if "id" in s}
         validation = validate_rows(rows, structures_by_id)

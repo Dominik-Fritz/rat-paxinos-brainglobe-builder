@@ -339,7 +339,7 @@ def main() -> int:
             warnings.extend(resource_warnings)
             report["resource_rows"] = len(rows)
             report["applicable_rows_including_root_lock"] = len(approved)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Could not read/parse resource CSV: {exc}")
 
     if not errors:
@@ -375,7 +375,7 @@ def main() -> int:
                     write_json_list(structures_path, after)
                     result["written"] = True
                 all_changes.extend(changes)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 msg = str(exc)
                 result["errors"].append(msg)
                 errors.append(f"{target_label}: {msg}")

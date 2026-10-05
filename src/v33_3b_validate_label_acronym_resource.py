@@ -188,7 +188,7 @@ def main() -> int:
         report["validation"]={"problems":[{"type":"missing_required_columns","columns":missing}]}
         report["passed"]=False
     else:
-        structures=load_structures(selected/"structures.json")  # type: ignore[operator]
+        structures=load_structures(selected/"structures.json")
         v=validate(rows, structures)
         write_csv(report_dir/"v33_3b_name_mismatches_current_vs_resource.csv", v["name_mismatches"], ["label_id","current_acronym","current_name","paxinos_name","proposed_acronym","proposed_name","review_status","confidence","acronym_basis"])
         write_csv(report_dir/"v33_3b_approved_change_preview.csv", v["approved_preview"], ["label_id","old_acronym","old_name","new_acronym","new_name","acronym_basis","basis_detail","confidence"])

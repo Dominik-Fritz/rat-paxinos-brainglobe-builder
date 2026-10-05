@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 V33.5 Pending / Ugly Label Audit
 ================================
@@ -255,7 +254,7 @@ def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[
     }
     counts: Dict[int, int] = {}
     try:
-        import numpy as np  # type: ignore
+        import numpy as np
     except Exception as e:
         info["error"] = f"numpy unavailable: {e}"
         return counts, info
@@ -265,7 +264,7 @@ def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[
         info["attempted"] = True
         info["source"] = str(annotation_nii)
         try:
-            import nibabel as nib  # type: ignore
+            import nibabel as nib
             img = nib.load(str(annotation_nii))
             data = np.asanyarray(img.dataobj)
             values, cnts = np.unique(data, return_counts=True)
@@ -283,7 +282,7 @@ def try_voxel_counts(annotation_nii: Path, annotation_tiff: Path) -> Tuple[Dict[
         info["attempted"] = True
         info["source"] = str(annotation_tiff)
         try:
-            import tifffile  # type: ignore
+            import tifffile
             data = tifffile.imread(str(annotation_tiff))
             values, cnts = np.unique(data, return_counts=True)
             for v, c in zip(values, cnts):

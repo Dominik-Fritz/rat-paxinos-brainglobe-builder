@@ -253,7 +253,7 @@ def main() -> int:
         return 2
 
     rows = read_csv_dicts(resource)
-    structures_path = selected / "structures.json"  # type: ignore[operator]
+    structures_path = selected / "structures.json"
     structures = load_structures(structures_path)
     sanitized, excluded, added, counts = sanitize_resource(rows, structures)
     fieldnames = list(dict.fromkeys(BASE_COLS + [c for r in sanitized for c in r.keys()]))

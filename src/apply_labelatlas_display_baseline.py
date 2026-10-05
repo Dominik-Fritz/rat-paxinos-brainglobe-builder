@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 V32.17 LabelAtlas Display Baseline
 
@@ -74,7 +73,7 @@ def copy_backup(src: Path, backup_dir: Path, actions: List[Dict[str, Any]], erro
             shutil.copy2(src, dst)
         actions.append({"action": "backup", "src": str(src), "dst": str(dst)})
         return dst
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors.append(f"Could not backup {src}: {exc}")
         return None
 
@@ -105,12 +104,12 @@ def cache_root() -> Path:
 
 def import_image_libs():
     try:
-        import nibabel as nib  # type: ignore
-    except Exception as exc:  # noqa: BLE001
+        import nibabel as nib
+    except Exception as exc:
         raise RuntimeError("Missing dependency: nibabel. Run the install-deps BAT first.") from exc
     try:
-        import tifffile  # type: ignore
-    except Exception as exc:  # noqa: BLE001
+        import tifffile
+    except Exception as exc:
         raise RuntimeError("Missing dependency: tifffile. Run the install-deps BAT first.") from exc
     return nib, tifffile
 
@@ -200,7 +199,7 @@ def write_reference_proxy(atlas_dir: Path, backup_dir: Path, actions: List[Dict[
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"Could not parse metadata.json in {atlas_dir}: {exc}")
                 meta = {}
         meta.update({
@@ -258,7 +257,7 @@ def quarantine_test_atlases(bg_root: Path, project_root: Path, actions: List[Dic
                     shutil.move(str(child), str(dst))
                     actions.append({"action": "quarantine_cache_test_atlas", "src": str(child), "dst": str(dst)})
                     entry.update({"quarantined": True, "dst": str(dst)})
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(f"Could not quarantine {child}: {exc}")
             result.append(entry)
     return result
@@ -273,7 +272,7 @@ def clean_last_versions(bg_root: Path, backup_dir: Path, actions: List[Dict[str,
         entry: Dict[str, Any] = {"path": str(path), "changed": False}
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Could not read {path}: {exc}")
             continue
         lines = text.splitlines()
@@ -399,13 +398,13 @@ def main() -> int:
 
     try:
         report["cache_stable"] = write_reference_proxy(cache_atlas_dir, backup_dir / "cache_stable", actions, errors, dry_run=args.dry_run)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors.append(f"Cache stable atlas patch failed: {exc}")
 
     if not args.cache_only:
         try:
             report["project_stable"] = write_reference_proxy(project_atlas_dir, backup_dir / "project_stable", actions, errors, dry_run=args.dry_run)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"Project stable atlas patch failed: {exc}")
     else:
         report["project_stable"] = {"skipped": True, "reason": "--cache-only"}
