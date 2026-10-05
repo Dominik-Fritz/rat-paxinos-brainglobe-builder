@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Release data manager for the Paxinos/Watson rat BrainGlobe builder.
+"""Download and verify the Paxinos/Watson source atlas and label tables.
 
-Default mode is intentionally minimal and label-atlas only.
-It downloads/verifies only the Paxinos/Watson source atlas and label tables
-needed by the stable LabelAtlas pipeline. It does not run MRI/reference-channel
-experiments and does not download Waxholm/SIGMA/NeuroRat optional channels.
+Only what the label atlas needs; optional reference data is never fetched.
 """
 from __future__ import annotations
 

@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""
-V33.4b Apply Approved Label Acronym Curation
+"""Apply the approved rows of the curated acronym resource to structures.json.
 
-Applies only approved rows from the curated Paxinos/Watson acronym resource to
-structures.json metadata. It never changes annotation volumes, voxel IDs,
-parent_structure_id, or structure_id_path.
-
-Default mode is dry-run. Use --apply to write changes.
+Annotation volumes, voxel IDs, parent_structure_id and structure_id_path are never
+changed. Dry run by default; --apply writes the changes.
 """
 from __future__ import annotations
 
@@ -87,7 +83,7 @@ def build_approved_map(rows: List[Dict[str, str]]) -> Dict[int, Dict[str, str]]:
         if norm(row.get("review_status")).lower() != "approved":
             continue
         if norm(row.get("proposed_acronym")).upper().startswith("UNL"):
-            # Do not apply placeholder labels even if someone accidentally approves them.
+            # Placeholder labels are never applied, even if approved by mistake.
             continue
         try:
             sid = int(norm(row.get("label_id")))
@@ -130,7 +126,7 @@ def apply_to_structures(structures: List[Dict[str, Any]], approved: Dict[int, Di
         })
         st["acronym"] = new_acr
         st["name"] = new_name
-        # Preserve all other metadata. Add non-invasive provenance fields if already absent.
+        # Other metadata stays; provenance fields are only added where missing.
         st.setdefault("label_curation", {})
         if isinstance(st["label_curation"], dict):
             st["label_curation"].update({
@@ -139,7 +135,7 @@ def apply_to_structures(structures: List[Dict[str, Any]], approved: Dict[int, Di
                 "basis_detail": row.get("basis_detail", ""),
                 "confidence": row.get("confidence", ""),
             })
-    # Safety: no duplicate acronyms after proposed apply.
+    # Refuse duplicate acronyms.
     acrs = [norm(s.get("acronym")) for s in output if norm(s.get("acronym"))]
     dup = sorted([a for a, c in Counter(acrs).items() if c > 1])
     if dup:
