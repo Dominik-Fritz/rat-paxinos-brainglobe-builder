@@ -942,8 +942,9 @@ def render_native(package_path: str) -> dict:
         binding = build_rebound_state(state_path, planes, rebound_path)
         ij, _ = runtime.initialize_native_api(paths)
         abba, fixed_source_report = _open_fixed_abba(ij, _atlas_name())
-        # The .abba file is ABBA's own project state (sources.json, state.json, BDV XML),
-        # not a standard ZIP export, so it goes through state_load.
+        # The .abba file is ABBA's own project state (sources.json, state.json, BDV XML).
+        # ImportStdZipStateCommand expects a different interchange format, so it goes
+        # through state_load.
         _restore_state_and_wait(abba, _java_file(rebound_path))
         transform_roundtrip, slice_state_audit, diagnostic_warnings = _collect_state_diagnostics(
             abba,
