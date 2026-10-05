@@ -174,7 +174,7 @@ def main() -> int:
     do_not_apply_rows = sort_rows([r for r in rows if str(r.get("resource_review_status", "")) == "do_not_apply" or "placeholder" in str(r.get("flags", ""))])
     generic_risk_rows = sort_rows([r for r in rows if "generic_acronym_risk" in str(r.get("flags", ""))])
 
-    # family batches, pending non-placeholder only. Keep manageable top 75 each.
+    # Family batches: pending, non-placeholder rows, top 75 each.
     family_rows: Dict[str, List[Dict[str, object]]] = {}
     for r in non_placeholder_pending:
         family_rows.setdefault(str(r.get("family_group", "other")), []).append(r)

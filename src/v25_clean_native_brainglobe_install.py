@@ -392,7 +392,7 @@ def try_load_with_brain_globe(bg_dir: Path) -> dict[str, Any]:
         for attr in ["atlas_name", "name", "root_dir", "atlas_dir", "local_full_name", "local_version", "resolution", "orientation", "shape", "metadata"]:
             result["object_summary"][attr] = safe_attr(atlas, attr)
 
-        # Now deliberately test actual data access.
+        # Test real data access.
         result["object_summary"]["reference"] = safe_attr(atlas, "reference")
         result["object_summary"]["annotation"] = safe_attr(atlas, "annotation")
         result["object_summary"]["structures"] = safe_attr(atlas, "structures")

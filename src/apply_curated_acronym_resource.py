@@ -149,7 +149,7 @@ def build_approved_map(rows: List[Dict[str, str]]) -> Tuple[Dict[int, Dict[str, 
             continue
         approved[sid] = row
 
-    # Root is hard-locked even if the CSV is edited later by an overconfident mammal.
+    # Root is locked, whatever the CSV says.
     approved[ROOT_ID] = {
         "label_id": str(ROOT_ID),
         "proposed_acronym": "root",
@@ -231,7 +231,7 @@ def plan_for_structures(target_label: str, atlas_dir: Path, structures: List[Dic
     for sid in sorted(approved):
         row = approved[sid]
         if sid not in by_id:
-            # Root and approved rows missing from a target are a real mismatch, not a cute little surprise.
+            # Root or approved rows missing from a target are a real mismatch.
             errors.append(f"Applicable label_id {sid} is missing from {atlas_dir / 'structures.json'}")
             continue
         new_acronym, new_name = proposed_values(sid, row)

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-V33.3b Label Acronym Resource Validator
-
-Validates the sanitized curated Paxinos/Watson acronym resource before it is used
-by the builder. It never modifies atlas files.
-"""
+"""Validate the sanitized acronym resource before the builder uses it; never modifies atlas files."""
 from __future__ import annotations
 
 import argparse

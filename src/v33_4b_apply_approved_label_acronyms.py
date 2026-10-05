@@ -60,7 +60,7 @@ def get_user_home() -> Path:
 
 
 def candidate_atlas_dirs(root: Path) -> List[Path]:
-    # Project outputs first, then installed BrainGlobe cache. Keep both _v1.0 and non-suffixed variants.
+    # Project outputs first, then the installed BrainGlobe cache, with and without the _v1.0 suffix.
     return [
         root / "data" / "output" / "brainglobe_official_candidate" / ATLAS_NAME,
         root / "data" / "output" / "brainglobe_official_candidate" / f"{ATLAS_NAME}_v1.0",
